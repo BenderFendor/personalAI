@@ -1,9 +1,18 @@
 """Display utilities for Rich console output."""
 
+import json
+import re
+from typing import List, Dict, Tuple, Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
 from models import ContextUsage
+
+try:
+    from sentence_transformers import SentenceTransformer, util
+    SEMANTIC_AVAILABLE = True
+except ImportError:
+    SEMANTIC_AVAILABLE = False
 
 
 class DisplayHelper:
@@ -16,6 +25,84 @@ class DisplayHelper:
             console: Rich console instance
         """
         self.console = console
+        self._semantic_model = None
+        if SEMANTIC_AVAILABLE:
+            try:
+                self._semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+            except Exception as e:
+                self.console.print(f"[yellow]Warning: Could not load semantic model: {e}[/yellow]")
+                self._semantic_model = None
+    
+    def extract_and_rank_urls(
+        self, 
+        search_results: str, 
+        query: str,
+        threshold: float = 0.6
+    ) -> List[Dict[str, str]]:
+        """Extract URLs from search results and rank by semantic relevance.
+        
+        Args:
+            search_results: Raw search results text
+            query: Original search query
+            threshold: Relevance score threshold (0-1)
+            
+        Returns:
+            List of dicts with 'url', 'title', 'score' keys, sorted by score descending
+        """
+        urls_data = []
+        
+        # Extract URLs and associated titles from search results
+        # Pattern: "N. Title\n   Source/URL: ...\n"
+        url_pattern = r'(?:URL|url):\s*(https?://[^\n]+)'
+        title_pattern = r'^\d+\.\s+(.+?)(?:\n|$)'
+        
+        for match in re.finditer(url_pattern, search_results):
+            url = match.group(1).strip()
+            if url and url.startswith(('http://', 'https://')):
+                # Find the preceding title
+                start_pos = max(0, match.start() - 200)
+                preceding_text = search_results[start_pos:match.start()]
+                title_match = re.search(r'(\d+\.\s+.+?)(?:\n|$)', preceding_text[-150:] if len(preceding_text) > 150 else preceding_text)
+                title = title_match.group(1) if title_match else url
+                
+                urls_data.append({
+                    'url': url,
+                    'title': title,
+                    'score': 0.0
+                })
+        
+        # Remove duplicates
+        unique_urls = {item['url']: item for item in urls_data}
+        urls_data = list(unique_urls.values())
+        
+        # Score by semantic similarity if model available
+        if self._semantic_model and urls_data:
+            try:
+                query_embedding = self._semantic_model.encode(query, convert_to_tensor=True)
+                
+                for item in urls_data:
+                    title_text = item['title']
+                    # Remove numbering if present
+                    title_text = re.sub(r'^\d+\.\s+', '', title_text)
+                    
+                    title_embedding = self._semantic_model.encode(title_text, convert_to_tensor=True)
+                    similarity = util.pytorch_cos_sim(query_embedding, title_embedding).item()
+                    item['score'] = max(0.0, similarity)  # Clamp to 0-1
+            except Exception as e:
+                self.console.print(f"[yellow]Warning: Semantic scoring failed: {e}[/yellow]")
+                # Fall back to uniform scoring
+                for item in urls_data:
+                    item['score'] = 1.0
+        else:
+            # Fallback: uniform scores if no semantic model
+            for item in urls_data:
+                item['score'] = 1.0
+        
+        # Filter by threshold and sort by score
+        filtered_urls = [item for item in urls_data if item['score'] >= threshold]
+        filtered_urls.sort(key=lambda x: x['score'], reverse=True)
+        
+        return filtered_urls
     
     def display_context_bar(self, context_usage: ContextUsage) -> str:
         """Create context window usage display string.

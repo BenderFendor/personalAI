@@ -18,7 +18,10 @@ class ConfigManager:
         "tools_enabled": True,
         "markdown_rendering": True,
         "max_tool_iterations": 5,
-        "context_window_size": 8192
+        "context_window_size": 8192,
+        "auto_fetch_urls": True,
+        "auto_fetch_tools": ["news_search", "web_search"],
+        "auto_fetch_threshold": 0.6
     }
     
     def __init__(self, config_path: str = "config.json"):
