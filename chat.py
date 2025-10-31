@@ -183,7 +183,7 @@ class ChatBot:
                 
                 # Include thinking content if available
                 if 'thinking' in msg and msg['thinking']:
-                    f.write("### 💭 Thinking Process\n\n")
+                    f.write("### Thinking Process\n\n")
                     f.write(f"```\n{msg['thinking']}\n```\n\n")
                 
                 f.write(f"{content}\n\n")
@@ -282,7 +282,7 @@ class ChatBot:
                 # Handle thinking content
                 if 'thinking' in message and message['thinking']:
                     if not started_thinking and self.config['show_thinking']:
-                        self.console.print("\n[bold magenta]💭 Thinking:[/bold magenta]")
+                        self.console.print("\n[bold magenta]Thinking:[/bold magenta]")
                         self.console.print("[dim]" + "=" * 60 + "[/dim]")
                         started_thinking = True
                     
@@ -299,7 +299,7 @@ class ChatBot:
                         finished_thinking = True
                     
                     if not full_response and not started_thinking:
-                        self.console.print("\n[bold green]🤖 Assistant:[/bold green]")
+                        self.console.print("\n[bold green]Assistant:[/bold green]")
                     
                     content_chunk = message['content']
                     full_response += content_chunk
@@ -322,11 +322,16 @@ class ChatBot:
                     function_name = tool_call['function']['name']
                     arguments = tool_call['function']['arguments']
                     
-                    self.console.print(f"\n[cyan]🔧 Using tool: {function_name}[/cyan]")
-                    self.console.print(f"[dim]Arguments: {arguments}[/dim]")
+                    self.console.print(f"\n[bold cyan]>> Tool Call: {function_name}[/bold cyan]")
+                    self.console.print(f"[dim]   Arguments: {json.dumps(arguments, indent=2)}[/dim]")
                     
                     # Execute the tool
+                    self.console.print(f"[yellow]   Executing...[/yellow]")
                     tool_result = self._execute_tool(function_name, arguments)
+                    
+                    # Show abbreviated result
+                    result_preview = tool_result[:200] + "..." if len(tool_result) > 200 else tool_result
+                    self.console.print(f"[dim]   Result: {result_preview}[/dim]")
                     
                     # Add tool result to messages
                     ollama_messages.append({
@@ -335,18 +340,22 @@ class ChatBot:
                     })
                 
                 # Get final response with tool results
-                with self.console.status("[bold green]🤖 Processing results...", spinner="dots"):
-                    final_response = ollama.chat(
-                        model=self.config['model'],
-                        messages=ollama_messages,
-                        stream=False,
-                        options={
-                            'temperature': self.config['temperature']
-                        }
-                    )
+                self.console.print(f"\n[bold yellow]>> Model Call: {self.config['model']}[/bold yellow]")
+                self.console.print(f"[dim]   Processing tool results...[/dim]")
+                self.console.print(f"[dim]   Temperature: {self.config['temperature']}[/dim]")
+                self.console.print(f"[dim]   Messages in context: {len(ollama_messages)}[/dim]")
+                
+                final_response = ollama.chat(
+                    model=self.config['model'],
+                    messages=ollama_messages,
+                    stream=False,
+                    options={
+                        'temperature': self.config['temperature']
+                    }
+                )
                 
                 full_response = final_response['message']['content']
-                self.console.print("\n[bold green]🤖 Final Response:[/bold green]")
+                self.console.print("\n[bold green]Final Response:[/bold green]")
             
             # Render response with markdown if enabled
             if self.config['markdown_rendering'] and full_response:
@@ -371,17 +380,17 @@ class ChatBot:
             
         except Exception as e:
             error_msg = f"Error: {str(e)}"
-            self.console.print(f"\n[red]❌ {error_msg}[/red]")
+            self.console.print(f"\n[red]ERROR: {error_msg}[/red]")
             return error_msg
     
     def run(self):
         """Run the interactive chat loop."""
         # Display welcome banner
         welcome_panel = Panel.fit(
-            "[bold cyan]🤖 Simple Personal AI Chatbot[/bold cyan]\n"
+            "[bold cyan]Simple Personal AI Chatbot[/bold cyan]\n"
             f"[yellow]Model:[/yellow] {self.config['model']}\n"
-            f"[yellow]Tools:[/yellow] {'✓ Enabled' if self.config['tools_enabled'] else '✗ Disabled'}\n"
-            f"[yellow]Thinking:[/yellow] {'✓ Enabled' if self.config['thinking_enabled'] else '✗ Disabled'}",
+            f"[yellow]Tools:[/yellow] {'Enabled' if self.config['tools_enabled'] else 'Disabled'}\n"
+            f"[yellow]Thinking:[/yellow] {'Enabled' if self.config['thinking_enabled'] else 'Disabled'}",
             title="[bold]Welcome[/bold]",
             border_style="green"
         )
@@ -403,7 +412,7 @@ class ChatBot:
         
         while True:
             try:
-                user_input = self.console.input("\n[bold blue]👤 You:[/bold blue] ").strip()
+                user_input = self.console.input("\n[bold blue]You:[/bold blue] ").strip()
                 
                 if not user_input:
                     continue
@@ -411,17 +420,17 @@ class ChatBot:
                 # Handle commands
                 if user_input.startswith('/'):
                     if user_input in ['/quit', '/exit']:
-                        self.console.print("\n[yellow]💾 Saving chat log...[/yellow]")
+                        self.console.print("\n[yellow]Saving chat log...[/yellow]")
                         self.save_chat_log()
-                        self.console.print("[green]👋 Goodbye![/green]")
+                        self.console.print("[green]Goodbye![/green]")
                         break
                     elif user_input == '/save':
                         self.save_chat_log()
-                        self.console.print(f"[green]✅ Chat log saved to chat_logs/chat_{self.current_session}.md[/green]")
+                        self.console.print(f"[green]Chat log saved to chat_logs/chat_{self.current_session}.md[/green]")
                         continue
                     elif user_input == '/clear':
                         self.messages = []
-                        self.console.print("[green]✅ Chat history cleared![/green]")
+                        self.console.print("[green]Chat history cleared![/green]")
                         continue
                     elif user_input == '/config':
                         config_text = "\n[bold]Current Configuration:[/bold]\n"
@@ -432,19 +441,19 @@ class ChatBot:
                     elif user_input == '/toggle-tools':
                         self.config['tools_enabled'] = not self.config['tools_enabled']
                         status = "enabled" if self.config['tools_enabled'] else "disabled"
-                        self.console.print(f"[green]✅ Tools {status}[/green]")
+                        self.console.print(f"[green]Tools {status}[/green]")
                         self.save_config()
                         continue
                     elif user_input == '/toggle-thinking':
                         self.config['show_thinking'] = not self.config['show_thinking']
                         status = "shown" if self.config['show_thinking'] else "hidden"
-                        self.console.print(f"[green]✅ Thinking process will be {status}[/green]")
+                        self.console.print(f"[green]Thinking process will be {status}[/green]")
                         self.save_config()
                         continue
                     elif user_input == '/toggle-markdown':
                         self.config['markdown_rendering'] = not self.config['markdown_rendering']
                         status = "enabled" if self.config['markdown_rendering'] else "disabled"
-                        self.console.print(f"[green]✅ Markdown rendering {status}[/green]")
+                        self.console.print(f"[green]Markdown rendering {status}[/green]")
                         self.save_config()
                         continue
                     elif user_input == '/help':
@@ -462,19 +471,19 @@ class ChatBot:
                         self.console.print(Panel(help_text, border_style="blue"))
                         continue
                     else:
-                        self.console.print("[red]❌ Unknown command. Type /help for available commands.[/red]")
+                        self.console.print("[red]Unknown command. Type /help for available commands.[/red]")
                         continue
                 
                 # Process chat message
                 self.chat(user_input)
                 
             except KeyboardInterrupt:
-                self.console.print("\n\n[yellow]💾 Saving chat log...[/yellow]")
+                self.console.print("\n\n[yellow]Saving chat log...[/yellow]")
                 self.save_chat_log()
-                self.console.print("[green]👋 Goodbye![/green]")
+                self.console.print("[green]Goodbye![/green]")
                 break
             except Exception as e:
-                self.console.print(f"\n[red]❌ Unexpected error: {e}[/red]")
+                self.console.print(f"\n[red]Unexpected error: {e}[/red]")
 
 
 def main():
