@@ -1,77 +1,44 @@
-#!/usr/bin/env python3
-"""
-Simple Personal AI Chatbot CLI
-A file-first chatbot using Ollama with web search capabilities, thinking models, and tool use
-"""
+"""Core chatbot implementation."""
 
-import os
-import json
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, Callable, List, Optional
+from typing import List, Dict, Any
+import json
 import ollama
-from ddgs import DDGS
 from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.status import Status
-from rich.live import Live
-from rich.text import Text
-import requests
-import trafilatura
-from trafilatura.settings import use_config
+
+from models import Message, ContextUsage
+from config_manager import ConfigManager
+from tools import get_tool_definitions, ToolExecutor
+from utils import ContextCalculator, ChatLogger, DisplayHelper
 
 
 class ChatBot:
-    def __init__(self, config_path="config.json", logs_dir="chat_logs"):
-        """Initialize the chatbot with configuration and logging."""
-        self.config_path = Path(config_path)
-        self.logs_dir = Path(logs_dir)
-        self.logs_dir.mkdir(exist_ok=True)
+    """Core chatbot with AI conversation and tool use capabilities."""
+    
+    def __init__(self, config_path: str = "config.json", logs_dir: str = "chat_logs"):
+        """Initialize the chatbot.
         
-        # Initialize Rich console
+        Args:
+            config_path: Path to configuration file
+            logs_dir: Directory for chat logs
+        """
         self.console = Console()
+        self.config = ConfigManager(config_path)
+        self.context_calc = ContextCalculator(self.config.model)
+        self.logger = ChatLogger(logs_dir)
+        self.display = DisplayHelper(self.console)
+        self.tool_executor = ToolExecutor(self.config.get_all(), self.console)
         
-        # Load or create config
-        self.config = self.load_config()
-        
-        # Initialize chat history
-        self.messages = []
+        self.messages: List[Message] = []
         self.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Initialize tools
-        self.tools = self._setup_tools()
-        self.available_functions = self._setup_functions()
-        
-        # Context window tracking
-        self.context_window_size = 16000  # Default, will be updated from model info
-        self._update_model_info()
-        
-    def load_config(self):
-        """Load configuration from file or create default."""
-        default_config = {
-            "model": "qwen3",
-            "temperature": 0.7,
-            "web_search_enabled": True,
-            "max_search_results": 20,
-            "thinking_enabled": True,
-            "show_thinking": True,
-            "tools_enabled": True,
-            "markdown_rendering": True,
-            "max_tool_iterations": 5
-        }
-        
-        if self.config_path.exists():
-            with open(self.config_path, 'r') as f:
-                config = json.load(f)
-                # Merge with defaults for any missing keys
-                return {**default_config, **config}
-        else:
-            self.save_config(default_config)
-            return default_config
+        self.tools = get_tool_definitions()
     
     def _get_system_prompt(self) -> str:
-        """Generate the system prompt dynamically."""
+        """Generate the system prompt dynamically.
+        
+        Returns:
+            System prompt string
+        """
         return (
             "You are a helpful AI assistant with access to various tools. "
             f"The current date is {datetime.now().strftime('%Y-%m-%d')}. "
@@ -92,705 +59,123 @@ class ChatBot:
             "- Use this for deep research, fact-checking, or gathering comprehensive information"
         )
     
-    def _update_model_info(self):
-        """Get model information including context window size from Ollama."""
-        try:
-            # Use ollama.show() to get model details
-            model_info = ollama.show(self.config['model'])
-            
-            # The context window size is typically in the modelfile or parameters
-            # Check parameters string for num_ctx
-            if 'parameters' in model_info:
-                params = model_info.get('parameters', '')
-                if 'num_ctx' in params:
-                    import re
-                    # Look for "num_ctx 8192" pattern
-                    match = re.search(r'num_ctx\s+(\d+)', params)
-                    if match:
-                        self.context_window_size = int(match.group(1))
-                        return
-            
-            # Check modelfile for PARAMETER num_ctx
-            if 'modelfile' in model_info:
-                modelfile = model_info.get('modelfile', '')
-                if 'num_ctx' in modelfile:
-                    import re
-                    match = re.search(r'PARAMETER\s+num_ctx\s+(\d+)', modelfile, re.IGNORECASE)
-                    if match:
-                        self.context_window_size = int(match.group(1))
-                        return
-            
-            # Check details for context_length
-            if 'details' in model_info:
-                details = model_info.get('details', {})
-                if isinstance(details, dict):
-                    # Some models report context_length in details
-                    if 'context_length' in details:
-                        self.context_window_size = details['context_length']
-                        return
-            
-            # Default fallback based on common model sizes
-            self.console.print(f"[dim]Using default context window size: 8192 tokens[/dim]")
-            self.context_window_size = 8192
-            
-        except Exception as e:
-            # If we can't get model info, use reasonable default
-            self.console.print(f"[dim]Could not fetch model info: {e}. Using default context size: 8192[/dim]")
-            self.context_window_size = 8192
+    def save_chat_log(self) -> None:
+        """Save current chat session to file."""
+        self.logger.save_session(
+            self.current_session,
+            self.messages,
+            self.config.get_all()
+        )
     
-    def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count (rough approximation: ~4 chars per token)."""
-        return len(text) // 4
+    def clear_history(self) -> None:
+        """Clear chat message history."""
+        self.messages = []
     
-    def _calculate_context_usage(self, messages: list) -> dict:
-        """Calculate current context window usage."""
-        total_chars = 0
+    def get_context_usage(self) -> ContextUsage:
+        """Get current context window usage.
         
-        # System prompt
-        total_chars += len(self._get_system_prompt())
+        Returns:
+            ContextUsage object
+        """
+        ollama_messages = [{'role': 'system', 'content': self._get_system_prompt()}]
+        for msg in self.messages:
+            ollama_messages.append(msg.to_ollama_format())
         
-        # All messages
-        for msg in messages:
-            if isinstance(msg, dict):
-                total_chars += len(str(msg.get('content', '')))
-                if 'tool_calls' in msg:
-                    total_chars += len(str(msg['tool_calls']))
-        
-        estimated_tokens = self._estimate_tokens(str(total_chars))
-        percentage = (estimated_tokens / self.context_window_size) * 100
-        
-        return {
-            'current_tokens': estimated_tokens,
-            'max_tokens': self.context_window_size,
-            'percentage': percentage,
-            'remaining_tokens': self.context_window_size - estimated_tokens
-        }
+        return self.context_calc.calculate_usage(
+            ollama_messages,
+            self._get_system_prompt()
+        )
     
-    def _display_context_window(self, context_usage: dict):
-        """Display context window usage in a compact format."""
-        percentage = context_usage['percentage']
-        current = context_usage['current_tokens']
-        max_tokens = context_usage['max_tokens']
+    def chat(self, user_input: str) -> str:
+        """Process user input and get AI response.
         
-        # Choose color based on usage
-        if percentage < 50:
-            color = "green"
-        elif percentage < 75:
-            color = "yellow"
-        else:
-            color = "red"
-        
-        # Create progress bar
-        bar_width = 20
-        filled = int((percentage / 100) * bar_width)
-        bar = "█" * filled + "░" * (bar_width - filled)
-        
-        return f"[{color}]Context: {current}/{max_tokens} tokens ({percentage:.1f}%) [{bar}][/{color}]"
-
-    def save_config(self, config=None):
-        """Save configuration to file."""
-        if config is None:
-            config = self.config
-        with open(self.config_path, 'w') as f:
-            json.dump(config, f, indent=2)
-    
-    def _setup_tools(self) -> List[Dict[str, Any]]:
-        """Setup tool definitions for Ollama."""
-        return [
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'web_search',
-                    'description': 'Search the web for current information using DuckDuckGo. Can perform multiple searches with reflection between each search. Use iterations parameter to control how many times to search and refine the query.',
-                    'parameters': {
-                        'type': 'object',
-                        'required': ['query'],
-                        'properties': {
-                            'query': {
-                                'type': 'string',
-                                'description': 'The search query'
-                            },
-                            'iterations': {
-                                'type': 'integer',
-                                'description': 'Number of search iterations to perform (1-5). After each search, results are analyzed before the next search. Default is 1.',
-                                'default': 1,
-                                'minimum': 1,
-                                'maximum': 5
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'news_search',
-                    'description': 'Search for recent news articles using DuckDuckGo News. Best for current events, breaking news, and time-sensitive information. Returns articles with publication dates, sources, and images.',
-                    'parameters': {
-                        'type': 'object',
-                        'required': ['keywords'],
-                        'properties': {
-                            'keywords': {
-                                'type': 'string',
-                                'description': 'Keywords to search for in news articles'
-                            },
-                            'region': {
-                                'type': 'string',
-                                'description': 'Region code (e.g., "us-en", "uk-en", "wt-wt" for worldwide). Default is "us-en".',
-                                'default': 'us-en'
-                            },
-                            'safesearch': {
-                                'type': 'string',
-                                'description': 'Safe search level: "on", "moderate", or "off". Default is "moderate".',
-                                'default': 'moderate',
-                                'enum': ['on', 'moderate', 'off']
-                            },
-                            'timelimit': {
-                                'type': 'string',
-                                'description': 'Time filter: "d" (day), "w" (week), "m" (month), or null for all time. Default is null.',
-                                'enum': ['d', 'w', 'm']
-                            },
-                            'max_results': {
-                                'type': 'integer',
-                                'description': 'Maximum number of news articles to return. Default is 10.',
-                                'default': 10,
-                                'minimum': 1,
-                                'maximum': 50
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'fetch_url_content',
-                    'description': 'Fetch and extract clean text content from a webpage URL. Removes ads, navigation, and other boilerplate to return only the main article content. Use this to read full articles from search results.',
-                    'parameters': {
-                        'type': 'object',
-                        'required': ['url'],
-                        'properties': {
-                            'url': {
-                                'type': 'string',
-                                'description': 'The URL to fetch content from'
-                            },
-                            'max_length': {
-                                'type': 'integer',
-                                'description': 'Maximum character length of extracted content (to avoid context overflow). Default is 5000.',
-                                'default': 5000,
-                                'minimum': 500,
-                                'maximum': 20000
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'calculate',
-                    'description': 'Perform mathematical calculations',
-                    'parameters': {
-                        'type': 'object',
-                        'required': ['expression'],
-                        'properties': {
-                            'expression': {
-                                'type': 'string',
-                                'description': 'Mathematical expression to evaluate (e.g., "2 + 2", "sqrt(16)")'
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                'type': 'function',
-                'function': {
-                    'name': 'get_current_time',
-                    'description': 'Get the current date and time',
-                    'parameters': {
-                        'type': 'object',
-                        'properties': {}
-                    }
-                }
-            }
-        ]
-    
-    def _setup_functions(self) -> Dict[str, Callable]:
-        """Setup actual function implementations."""
-        def web_search_tool(query: str, iterations: int = 1) -> str:
-            """Execute web search with optional iterations for deeper research."""
-            iterations = max(1, min(iterations, 5))  # Clamp between 1 and 5
+        Args:
+            user_input: User's message
             
-            # Execute the search
-            results = self.web_search(query)
-            if not results:
-                return "No search results found."
-            
-            output = f"Search results for '{query}'"
-            
-            if iterations > 1:
-                output += f" (Iteration 1 of {iterations} - Analyze these results and refine your next search)"
-            
-            output += ":\n\n"
-            
-            for i, result in enumerate(results, 1):
-                output += f"{i}. {result['title']}\n"
-                output += f"   URL: {result['url']}\n"
-                output += f"   {result['snippet']}\n\n"
-            
-            if iterations > 1:
-                output += (
-                    f"\n[ITERATION GUIDANCE]\n"
-                    f"You requested {iterations} search iterations.\n"
-                    f"After analyzing these results:\n"
-                    f"- Identify gaps in information\n"
-                    f"- Refine your search query\n"
-                    f"- Call web_search() again with the improved query\n"
-                    f"- Repeat {iterations - 1} more time(s)\n"
-                    f"Each search should build on the previous results.\n"
-                )
-            
-            return output
-        
-        def news_search_tool(
-            keywords: str,
-            region: str = "us-en",
-            safesearch: str = "moderate",
-            timelimit: str = None,
-            max_results: int = 10
-        ) -> str:
-            """Search for recent news articles using DuckDuckGo News API."""
-            if not self.config['web_search_enabled']:
-                return "News search is disabled (web_search_enabled is False)"
-            
-            try:
-                # Clamp max_results between 1 and 50
-                max_results = max(1, min(max_results, 50))
-                
-                ddgs = DDGS()
-                # Note: DDGS.news() uses 'query' parameter, not 'keywords'
-                results = ddgs.news(
-                    query=keywords,
-                    region=region,
-                    safesearch=safesearch,
-                    timelimit=timelimit,
-                    max_results=max_results
-                )
-                
-                if not results:
-                    return f"No news articles found for '{keywords}'"
-                
-                output = f"News search results for '{keywords}'"
-                if timelimit:
-                    time_desc = {"d": "past day", "w": "past week", "m": "past month"}.get(timelimit, "")
-                    output += f" ({time_desc})"
-                output += f" - Found {len(results)} articles:\n\n"
-                
-                for i, article in enumerate(results, 1):
-                    output += f"{i}. {article.get('title', 'No title')}\n"
-                    output += f"   Source: {article.get('source', 'Unknown source')}\n"
-                    output += f"   Date: {article.get('date', 'Unknown date')}\n"
-                    output += f"   URL: {article.get('url', 'No URL')}\n"
-                    
-                    body = article.get('body', '')
-                    if body:
-                        # Truncate body if too long
-                        body_preview = body[:300] + "..." if len(body) > 300 else body
-                        output += f"   Summary: {body_preview}\n"
-                    
-                    if article.get('image'):
-                        output += f"   Image: {article['image']}\n"
-                    
-                    output += "\n"
-                
-                output += "\n[TIP] Use fetch_url_content(url='...') to read the full article text from any URL above.\n"
-                
-                return output
-                
-            except Exception as e:
-                error_msg = f"Error performing news search: {str(e)}"
-                self.console.print(f"[red]{error_msg}[/red]")
-                return error_msg
-        
-        def fetch_url_content_tool(url: str, max_length: int = 5000) -> str:
-            """Fetch and extract clean text content from a URL using Trafilatura."""
-            if not url.startswith(('http://', 'https://')):
-                return "Error: Invalid URL format. URL must start with http:// or https://"
-            
-            try:
-                # Clamp max_length between 500 and 20000
-                max_length = max(500, min(max_length, 20000))
-                
-                # Configure trafilatura for better extraction
-                config = use_config()
-                config.set("DEFAULT", "EXTRACTION_TIMEOUT", "10")
-                
-                # Show status while fetching
-                self.console.print(f"[dim]Fetching content from {url[:60]}...[/dim]")
-                
-                # Fetch the URL content with timeout
-                downloaded = trafilatura.fetch_url(url)
-                
-                if not downloaded:
-                    # Fallback to requests if trafilatura fetch fails
-                    try:
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                        }
-                        response = requests.get(url, timeout=10, headers=headers)
-                        response.raise_for_status()
-                        downloaded = response.text
-                    except Exception as req_error:
-                        return f"Error fetching URL: Could not download content from {url}. Error: {str(req_error)}"
-                
-                # Extract main content using trafilatura
-                content = trafilatura.extract(
-                    downloaded,
-                    include_formatting=False,
-                    include_links=False,
-                    include_images=False,
-                    include_tables=True,
-                    config=config,
-                    favor_recall=True  # Get more content rather than being too conservative
-                )
-                
-                if not content:
-                    return f"Error: Could not extract readable content from {url}. The page may be JavaScript-heavy or behind a paywall."
-                
-                # Truncate to max_length if needed
-                if len(content) > max_length:
-                    content = content[:max_length] + f"\n\n[Content truncated at {max_length} characters. Original length: {len(content)} characters]"
-                
-                output = f"Content extracted from {url}:\n"
-                output += "=" * 60 + "\n\n"
-                output += content
-                output += "\n\n" + "=" * 60
-                output += f"\n[Extracted {len(content)} characters]"
-                
-                return output
-                
-            except Exception as e:
-                error_msg = f"Error fetching content from {url}: {str(e)}"
-                self.console.print(f"[red]{error_msg}[/red]")
-                return error_msg
-        
-        def calculate_tool(expression: str) -> str:
-            """Perform calculation."""
-            try:
-                # Safe eval with limited scope
-                import math
-                allowed_names = {
-                    'abs': abs, 'round': round, 'min': min, 'max': max,
-                    'sum': sum, 'pow': pow, 'sqrt': math.sqrt,
-                    'sin': math.sin, 'cos': math.cos, 'tan': math.tan,
-                    'pi': math.pi, 'e': math.e
-                }
-                result = eval(expression, {"__builtins__": {}}, allowed_names)
-                return f"Result: {result}"
-            except Exception as e:
-                return f"Error calculating: {str(e)}"
-        
-        def get_current_time_tool() -> str:
-            """Get current time."""
-            now = datetime.now()
-            return f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-        
-        return {
-            'web_search': web_search_tool,
-            'news_search': news_search_tool,
-            'fetch_url_content': fetch_url_content_tool,
-            'calculate': calculate_tool,
-            'get_current_time': get_current_time_tool
-        }
-    
-    def save_chat_log(self):
-        """Save current chat session to markdown file."""
-        log_file = self.logs_dir / f"chat_{self.current_session}.md"
-        
-        with open(log_file, 'w') as f:
-            f.write(f"# Chat Log - {self.current_session}\n\n")
-            f.write(f"**Model:** {self.config['model']}\n")
-            f.write(f"**Temperature:** {self.config['temperature']}\n")
-            f.write(f"**Tools Enabled:** {self.config['tools_enabled']}\n")
-            f.write(f"**Thinking Enabled:** {self.config['thinking_enabled']}\n\n")
-            f.write("---\n\n")
-            
-            for msg in self.messages:
-                role = msg['role'].upper()
-                content = msg['content']
-                timestamp = msg.get('timestamp', 'N/A')
-                
-                f.write(f"## {role} [{timestamp}]\n\n")
-                
-                # Include thinking content if available
-                if 'thinking' in msg and msg['thinking']:
-                    f.write("### Thinking Process\n\n")
-                    f.write(f"```\n{msg['thinking']}\n```\n\n")
-                
-                f.write(f"{content}\n\n")
-                
-                if 'sources' in msg:
-                    f.write("**Sources:**\n")
-                    for i, source in enumerate(msg['sources'], 1):
-                        f.write(f"{i}. [{source['title']}]({source['url']})\n")
-                        f.write(f"   - {source['snippet']}\n")
-                    f.write("\n")
-                
-                f.write("---\n\n")
-    
-    def web_search(self, query):
-        """Perform web search using DuckDuckGo."""
-        if not self.config['web_search_enabled']:
-            return None
-        
-        try:
-            ddgs = DDGS()
-            results = ddgs.text(query, max_results=self.config['max_search_results'])
-            
-            search_results = []
-            for result in results:
-                search_results.append({
-                    'title': result.get('title', ''),
-                    'url': result.get('href', ''),
-                    'snippet': result.get('body', '')
-                })
-            
-            return search_results
-        except Exception as e:
-            self.console.print(f"[red]Search error: {e}[/red]")
-            return None
-    
-    def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
-        """Execute a tool function."""
-        if tool_name in self.available_functions:
-            try:
-                func = self.available_functions[tool_name]
-                result = func(**arguments)
-                return result
-            except Exception as e:
-                return f"Error executing {tool_name}: {str(e)}"
-        return f"Tool {tool_name} not found"
-    
-    def chat(self, user_input):
-        """Process user input and get response from AI."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Add user message to history
-        user_msg = {
-            'role': 'user',
-            'content': user_input,
-            'timestamp': timestamp
-        }
+        Returns:
+            AI assistant's response
+        """
+        # Add user message
+        user_msg = Message(role='user', content=user_input)
         self.messages.append(user_msg)
         
         # Prepare messages for Ollama
-        ollama_messages = [
-            {'role': 'system', 'content': self._get_system_prompt()}
-        ]
-        
-        # Add conversation history
+        ollama_messages = [{'role': 'system', 'content': self._get_system_prompt()}]
         for msg in self.messages[:-1]:
-            ollama_messages.append({
-                'role': msg['role'],
-                'content': msg['content']
-            })
+            ollama_messages.append(msg.to_ollama_format())
         ollama_messages.append({'role': 'user', 'content': user_input})
         
-        # Show context window before making call
-        context_usage = self._calculate_context_usage(ollama_messages)
-        self.console.print(f"\n[dim]{self._display_context_window(context_usage)}[/dim]")
+        # Show context usage
+        context_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
+        self.console.print(f"\n[dim]{self.display.display_context_bar(context_usage)}[/dim]")
         
-        # Get AI response with tool support
         try:
-            # First call with tools and streaming
-            response = ollama.chat(
-                model=self.config['model'],
-                messages=ollama_messages,
-                tools=self.tools if self.config['tools_enabled'] else None,
-                stream=True,
-                options={
-                    'temperature': self.config['temperature']
-                }
-            )
+            # Initial response with streaming
+            response = self._stream_response(ollama_messages)
+            full_thinking, full_response, tool_calls = response
             
-            # Track thinking and response content
-            full_thinking = ""
-            full_response = ""
-            started_thinking = False
-            finished_thinking = False
-            tool_calls = []
-            
-            # Stream the response
-            for chunk in response:
-                message = chunk.get('message', {})
-                
-                # Handle thinking content
-                if 'thinking' in message and message['thinking']:
-                    if not started_thinking and self.config['show_thinking']:
-                        self.console.print("\n[bold magenta]Thinking:[/bold magenta]")
-                        self.console.print("[dim]" + "=" * 60 + "[/dim]")
-                        started_thinking = True
-                    
-                    thinking_chunk = message['thinking']
-                    full_thinking += thinking_chunk
-                    
-                    if self.config['show_thinking']:
-                        self.console.print(f"[dim]{thinking_chunk}[/dim]", end='')
-                
-                # Handle regular content
-                if 'content' in message and message['content']:
-                    if started_thinking and not finished_thinking and self.config['show_thinking']:
-                        self.console.print("\n[dim]" + "=" * 60 + "[/dim]")
-                        finished_thinking = True
-                    
-                    if not full_response and not started_thinking:
-                        self.console.print("\n[bold green]Assistant:[/bold green]")
-                    
-                    content_chunk = message['content']
-                    full_response += content_chunk
-                
-                # Check for tool calls
-                if 'tool_calls' in message:
-                    tool_calls = message['tool_calls']
-            
-            # Agentic Tool Loop: Allow model to iteratively use tools
-            # The model can:
-            # 1. Call a tool (e.g., web_search)
-            # 2. Receive and analyze the results
-            # 3. Decide to call the same or different tool again
-            # 4. Continue until it has enough information or max iterations reached
-            # This enables multi-step reasoning and information gathering
-            
-            # Handle tool calls if present - allow iterative tool use
-            max_iterations = self.config.get('max_tool_iterations', 5)  # Get from config
+            # Agentic tool loop - allow iterative tool use
+            max_iterations = self.config.max_tool_iterations
             iteration = 0
             
             while tool_calls and iteration < max_iterations:
                 iteration += 1
                 self.console.print(f"\n[bold blue]>> Tool Iteration {iteration}[/bold blue]")
-                
-                # Add assistant's tool request to messages
+                # Add assistant's tool request
                 ollama_messages.append({
                     'role': 'assistant',
                     'content': full_response if full_response else '',
-                    'tool_calls': tool_calls
+                    'tool_calls': json.dumps(tool_calls)
                 })
                 
-                # Execute each tool
+                # Execute tools
                 for tool_call in tool_calls:
                     function_name = tool_call['function']['name']
                     arguments = tool_call['function']['arguments']
                     
-                    # Check if iterations parameter was specified
-                    requested_iterations = arguments.get('iterations', 1) if function_name == 'web_search' else 1
+                    self.display.show_tool_call(function_name, arguments, iteration)
                     
-                    self.console.print(f"\n[bold cyan]>> Tool Call: {function_name}[/bold cyan]")
-                    if requested_iterations > 1:
-                        self.console.print(f"[bold yellow]   Multi-iteration search requested: {requested_iterations} searches planned[/bold yellow]")
-                    self.console.print(f"[dim]   Arguments: {json.dumps(arguments, indent=2)}[/dim]")
+                    # Execute tool
+                    tool_result = self.tool_executor.execute(function_name, arguments)
+                    self.display.show_tool_result(tool_result)
                     
-                    # Execute the tool
-                    self.console.print("[yellow]   Executing...[/yellow]")
-                    tool_result = self._execute_tool(function_name, arguments)
-                    
-                    # Show abbreviated result
-                    result_preview = tool_result[:200] + "..." if len(tool_result) > 200 else tool_result
-                    self.console.print(f"[dim]   Result: {result_preview}[/dim]")
-                    
-                    # Add tool result to messages
+                    # Add result to messages
                     ollama_messages.append({
                         'role': 'tool',
                         'content': tool_result
                     })
                 
-                # Get response with tool results - allow model to call tools again if needed
-                context_usage = self._calculate_context_usage(ollama_messages)
-                
-                self.console.print(f"\n[bold yellow]>> Model Call: {self.config['model']}[/bold yellow]")
+                # Get next response
+                context_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
+                self.console.print(f"\n[bold yellow]>> Model Call: {self.config.model}[/bold yellow]")
                 self.console.print("[dim]   Processing tool results...[/dim]")
-                self.console.print(f"[dim]   Temperature: {self.config['temperature']}[/dim]")
-                self.console.print(f"[dim]   Messages in context: {len(ollama_messages)}[/dim]")
-                self.console.print(f"[dim]   Tools available: {self.config['tools_enabled']}[/dim]")
-                self.console.print(f"[dim]   {self._display_context_window(context_usage)}[/dim]")
+                self.console.print(f"[dim]   {self.display.display_context_bar(context_usage)}[/dim]")
                 
-                # Stream the response to show thinking
-                next_response = ollama.chat(
-                    model=self.config['model'],
-                    messages=ollama_messages,
-                    tools=self.tools if self.config['tools_enabled'] else None,
-                    stream=True,
-                    options={
-                        'temperature': self.config['temperature']
-                    }
-                )
+                response = self._stream_response(ollama_messages)
+                iteration_thinking, full_response, tool_calls = response
+                full_thinking += iteration_thinking
                 
-                # Reset for next iteration
-                full_response = ""
-                tool_calls = []
-                iteration_thinking = ""
-                started_thinking = False
-                finished_thinking = False
-                
-                # Process the streamed response
-                for chunk in next_response:
-                    message = chunk.get('message', {})
-                    
-                    # Handle thinking content
-                    if 'thinking' in message and message['thinking']:
-                        if not started_thinking and self.config['show_thinking']:
-                            self.console.print("\n[bold magenta]Thinking:[/bold magenta]")
-                            self.console.print("[dim]" + "=" * 60 + "[/dim]")
-                            started_thinking = True
-                        
-                        thinking_chunk = message['thinking']
-                        iteration_thinking += thinking_chunk
-                        full_thinking += thinking_chunk
-                        
-                        if self.config['show_thinking']:
-                            self.console.print(f"[dim]{thinking_chunk}[/dim]", end='')
-                    
-                    # Handle regular content
-                    if 'content' in message and message['content']:
-                        if started_thinking and not finished_thinking and self.config['show_thinking']:
-                            self.console.print("\n[dim]" + "=" * 60 + "[/dim]")
-                            finished_thinking = True
-                        
-                        content_chunk = message['content']
-                        full_response += content_chunk
-                    
-                    # Check for more tool calls
-                    if 'tool_calls' in message and message['tool_calls']:
-                        tool_calls = message['tool_calls']
-                
-                # If no more tool calls, we're done
                 if not tool_calls:
                     self.console.print("\n[bold green]Final Response:[/bold green]")
                     break
-                else:
-                    self.console.print("\n[dim]Model wants to use more tools...[/dim]")
             
-            # Check if we hit max iterations
+            # Check max iterations
             if iteration >= max_iterations and tool_calls:
-                self.console.print("\n[yellow]Warning: Maximum tool iterations reached. Stopping.[/yellow]")
+                self.console.print("\n[yellow]Warning: Maximum tool iterations reached.[/yellow]")
                 self.console.print("[bold green]Partial Response:[/bold green]")
             
-            # Render response with markdown if enabled
-            if self.config['markdown_rendering'] and full_response:
-                md = Markdown(full_response)
-                self.console.print(md)
+            # Render response
+            if self.config.markdown_rendering and full_response:
+                self.display.render_markdown(full_response)
             elif full_response:
                 self.console.print(full_response)
             
-            # Add assistant message to history (with thinking if available)
-            assistant_msg = {
-                'role': 'assistant',
-                'content': full_response,
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            if full_thinking:
-                assistant_msg['thinking'] = full_thinking
-            
+            # Save assistant message
+            assistant_msg = Message(
+                role='assistant',
+                content=full_response,
+                thinking=full_thinking if full_thinking else None
+            )
             self.messages.append(assistant_msg)
             
             return full_response
@@ -800,146 +185,59 @@ class ChatBot:
             self.console.print(f"\n[red]ERROR: {error_msg}[/red]")
             return error_msg
     
-    def run(self):
-        """Run the interactive chat loop."""
-        # Display welcome banner
-        welcome_panel = Panel.fit(
-            "[bold cyan]Simple Personal AI Chatbot[/bold cyan]\n"
-            f"[yellow]Model:[/yellow] {self.config['model']}\n"
-            f"[yellow]Tools:[/yellow] {'Enabled' if self.config['tools_enabled'] else 'Disabled'}\n"
-            f"[yellow]Thinking:[/yellow] {'Enabled' if self.config['thinking_enabled'] else 'Disabled'}",
-            title="[bold]Welcome[/bold]",
-            border_style="green"
+    def _stream_response(self, messages: List[Dict[str, Any]]) -> tuple[str, str, list]:
+        """Stream response from Ollama.
+        
+        Args:
+            messages: Messages to send to Ollama
+            
+        Returns:
+            Tuple of (thinking_text, response_text, tool_calls)
+        """
+        response = ollama.chat(
+            model=self.config.model,
+            messages=messages,
+            tools=self.tools if self.config.tools_enabled else None,
+            stream=True,
+            options={'temperature': self.config.temperature}
         )
-        self.console.print(welcome_panel)
         
-        # Display help
-        help_text = """
-[bold]Commands:[/bold]
-  [cyan]/quit or /exit[/cyan] - Exit the chat
-  [cyan]/save[/cyan] - Save chat log
-  [cyan]/clear[/cyan] - Clear chat history
-  [cyan]/config[/cyan] - Show configuration
-  [cyan]/context[/cyan] - Show context window usage
-  [cyan]/toggle-tools[/cyan] - Toggle tool use on/off
-  [cyan]/toggle-thinking[/cyan] - Toggle thinking display on/off
-  [cyan]/toggle-markdown[/cyan] - Toggle markdown rendering
-  [cyan]/help[/cyan] - Show this help message
-"""
-        self.console.print(Panel(help_text, border_style="blue"))
+        full_thinking = ""
+        full_response = ""
+        tool_calls = []
+        started_thinking = False
+        finished_thinking = False
         
-        while True:
-            try:
-                user_input = self.console.input("\n[bold blue]You:[/bold blue] ").strip()
+        for chunk in response:
+            message = chunk.get('message', {})
+            
+            # Handle thinking
+            if 'thinking' in message and message['thinking']:
+                if not started_thinking and self.config.show_thinking:
+                    self.console.print("\n[bold magenta]Thinking:[/bold magenta]")
+                    self.console.print("[dim]" + "=" * 60 + "[/dim]")
+                    started_thinking = True
                 
-                if not user_input:
-                    continue
+                thinking_chunk = message['thinking']
+                full_thinking += thinking_chunk
                 
-                # Handle commands
-                if user_input.startswith('/'):
-                    if user_input in ['/quit', '/exit']:
-                        self.console.print("\n[yellow]Saving chat log...[/yellow]")
-                        self.save_chat_log()
-                        self.console.print("[green]Goodbye![/green]")
-                        break
-                    elif user_input == '/save':
-                        self.save_chat_log()
-                        self.console.print(f"[green]Chat log saved to chat_logs/chat_{self.current_session}.md[/green]")
-                        continue
-                    elif user_input == '/clear':
-                        self.messages = []
-                        self.console.print("[green]Chat history cleared![/green]")
-                        continue
-                    elif user_input == '/config':
-                        config_text = "\n[bold]Current Configuration:[/bold]\n"
-                        for key, value in self.config.items():
-                            config_text += f"  [cyan]{key}:[/cyan] {value}\n"
-                        self.console.print(Panel(config_text, title="Configuration", border_style="yellow"))
-                        continue
-                    elif user_input == '/context':
-                        # Prepare messages for context calculation
-                        temp_messages = [
-                            {'role': 'system', 'content': self._get_system_prompt()}
-                        ]
-                        for msg in self.messages:
-                            temp_messages.append({
-                                'role': msg['role'],
-                                'content': msg['content']
-                            })
-                        
-                        context_usage = self._calculate_context_usage(temp_messages)
-                        
-                        context_info = (
-                            f"\n[bold]Context Window Status:[/bold]\n\n"
-                            f"  [cyan]Model:[/cyan] {self.config['model']}\n"
-                            f"  [cyan]Current Usage:[/cyan] {context_usage['current_tokens']} tokens\n"
-                            f"  [cyan]Maximum:[/cyan] {context_usage['max_tokens']} tokens\n"
-                            f"  [cyan]Remaining:[/cyan] {context_usage['remaining_tokens']} tokens\n"
-                            f"  [cyan]Percentage:[/cyan] {context_usage['percentage']:.1f}%\n\n"
-                            f"  {self._display_context_window(context_usage)}\n\n"
-                            f"  [dim]Messages in history: {len(self.messages)}[/dim]\n"
-                        )
-                        
-                        # Add warning if high usage
-                        if context_usage['percentage'] > 75:
-                            context_info += "\n  [yellow]Warning: Context window is filling up. Consider using /clear to reset.[/yellow]\n"
-                        
-                        self.console.print(Panel(context_info, title="Context Window", border_style="cyan"))
-                        continue
-                    elif user_input == '/toggle-tools':
-                        self.config['tools_enabled'] = not self.config['tools_enabled']
-                        status = "enabled" if self.config['tools_enabled'] else "disabled"
-                        self.console.print(f"[green]Tools {status}[/green]")
-                        self.save_config()
-                        continue
-                    elif user_input == '/toggle-thinking':
-                        self.config['show_thinking'] = not self.config['show_thinking']
-                        status = "shown" if self.config['show_thinking'] else "hidden"
-                        self.console.print(f"[green]Thinking process will be {status}[/green]")
-                        self.save_config()
-                        continue
-                    elif user_input == '/toggle-markdown':
-                        self.config['markdown_rendering'] = not self.config['markdown_rendering']
-                        status = "enabled" if self.config['markdown_rendering'] else "disabled"
-                        self.console.print(f"[green]Markdown rendering {status}[/green]")
-                        self.save_config()
-                        continue
-                    elif user_input == '/help':
-                        help_text = """
-[bold]Commands:[/bold]
-  [cyan]/quit or /exit[/cyan] - Exit the chat
-  [cyan]/save[/cyan] - Save chat log
-  [cyan]/clear[/cyan] - Clear chat history
-  [cyan]/config[/cyan] - Show configuration
-  [cyan]/context[/cyan] - Show context window usage
-  [cyan]/toggle-tools[/cyan] - Toggle tool use on/off
-  [cyan]/toggle-thinking[/cyan] - Toggle thinking display on/off
-  [cyan]/toggle-markdown[/cyan] - Toggle markdown rendering
-  [cyan]/help[/cyan] - Show this help message
-"""
-                        self.console.print(Panel(help_text, border_style="blue"))
-                        continue
-                    else:
-                        self.console.print("[red]Unknown command. Type /help for available commands.[/red]")
-                        continue
+                if self.config.show_thinking:
+                    self.console.print(f"[dim]{thinking_chunk}[/dim]", end='')
+            
+            # Handle content
+            if 'content' in message and message['content']:
+                if started_thinking and not finished_thinking and self.config.show_thinking:
+                    self.console.print("\n[dim]" + "=" * 60 + "[/dim]")
+                    finished_thinking = True
                 
-                # Process chat message
-                self.chat(user_input)
+                if not full_response and not started_thinking:
+                    self.console.print("\n[bold green]Assistant:[/bold green]")
                 
-            except KeyboardInterrupt:
-                self.console.print("\n\n[yellow]Saving chat log...[/yellow]")
-                self.save_chat_log()
-                self.console.print("[green]Goodbye![/green]")
-                break
-            except Exception as e:
-                self.console.print(f"\n[red]Unexpected error: {e}[/red]")
-
-
-def main():
-    """Main entry point."""
-    chatbot = ChatBot()
-    chatbot.run()
-
-
-if __name__ == "__main__":
-    main()
+                content_chunk = message['content']
+                full_response += content_chunk
+            
+            # Handle tool calls
+            if 'tool_calls' in message:
+                tool_calls = message['tool_calls']
+        
+        return full_thinking, full_response, tool_calls

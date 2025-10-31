@@ -1,6 +1,6 @@
 """Command-line interface for the Personal AI Chatbot."""
 
-from chatbot import ChatBot
+from chat import ChatBot
 
 
 class ChatCLI:

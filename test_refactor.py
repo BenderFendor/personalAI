@@ -40,7 +40,7 @@ def test_imports():
         return False
     
     try:
-        from chatbot import ChatBot
+        from chat import ChatBot
         print("✓ chatbot imported")
     except ImportError as e:
         print(f"✗ Failed to import chatbot: {e}")
@@ -69,7 +69,7 @@ def test_initialization():
         return False
     
     try:
-        from chatbot import ChatBot
+        from chat import ChatBot
         chatbot = ChatBot()
         print(f"✓ ChatBot initialized (session: {chatbot.current_session})")
     except Exception as e:

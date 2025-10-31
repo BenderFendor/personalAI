@@ -6,7 +6,7 @@ A file-first chatbot using Ollama with web search capabilities, thinking models,
 This is the main entry point for the refactored modular chatbot.
 """
 
-from chatbot import ChatBot
+from chat import ChatBot
 from cli import ChatCLI
 
 
