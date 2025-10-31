@@ -47,11 +47,12 @@ class ChatBot:
             "temperature": 0.7,
             "system_prompt": "You are a helpful AI assistant with access to various tools. the current date is " + datetime.now().strftime("%Y-%m-%d") + ". use the web search tool get any information you do not know from after this date.",
             "web_search_enabled": True,
-            "max_search_results": 5,
+            "max_search_results": 20,
             "thinking_enabled": True,
             "show_thinking": True,
             "tools_enabled": True,
-            "markdown_rendering": True
+            "markdown_rendering": True,
+            "max_tool_iterations": 5
         }
         
         if self.config_path.exists():
@@ -308,12 +309,26 @@ class ChatBot:
                 if 'tool_calls' in message:
                     tool_calls = message['tool_calls']
             
-            # Handle tool calls if present
-            if tool_calls:
+            # Agentic Tool Loop: Allow model to iteratively use tools
+            # The model can:
+            # 1. Call a tool (e.g., web_search)
+            # 2. Receive and analyze the results
+            # 3. Decide to call the same or different tool again
+            # 4. Continue until it has enough information or max iterations reached
+            # This enables multi-step reasoning and information gathering
+            
+            # Handle tool calls if present - allow iterative tool use
+            max_iterations = self.config.get('max_tool_iterations', 5)  # Get from config
+            iteration = 0
+            
+            while tool_calls and iteration < max_iterations:
+                iteration += 1
+                self.console.print(f"\n[bold blue]>> Tool Iteration {iteration}[/bold blue]")
+                
                 # Add assistant's tool request to messages
                 ollama_messages.append({
                     'role': 'assistant',
-                    'content': full_response,
+                    'content': full_response if full_response else '',
                     'tool_calls': tool_calls
                 })
                 
@@ -326,7 +341,7 @@ class ChatBot:
                     self.console.print(f"[dim]   Arguments: {json.dumps(arguments, indent=2)}[/dim]")
                     
                     # Execute the tool
-                    self.console.print(f"[yellow]   Executing...[/yellow]")
+                    self.console.print("[yellow]   Executing...[/yellow]")
                     tool_result = self._execute_tool(function_name, arguments)
                     
                     # Show abbreviated result
@@ -339,23 +354,73 @@ class ChatBot:
                         'content': tool_result
                     })
                 
-                # Get final response with tool results
+                # Get response with tool results - allow model to call tools again if needed
                 self.console.print(f"\n[bold yellow]>> Model Call: {self.config['model']}[/bold yellow]")
                 self.console.print(f"[dim]   Processing tool results...[/dim]")
                 self.console.print(f"[dim]   Temperature: {self.config['temperature']}[/dim]")
                 self.console.print(f"[dim]   Messages in context: {len(ollama_messages)}[/dim]")
+                self.console.print(f"[dim]   Tools available: {self.config['tools_enabled']}[/dim]")
                 
-                final_response = ollama.chat(
+                # Stream the response to show thinking
+                next_response = ollama.chat(
                     model=self.config['model'],
                     messages=ollama_messages,
-                    stream=False,
+                    tools=self.tools if self.config['tools_enabled'] else None,
+                    stream=True,
                     options={
                         'temperature': self.config['temperature']
                     }
                 )
                 
-                full_response = final_response['message']['content']
-                self.console.print("\n[bold green]Final Response:[/bold green]")
+                # Reset for next iteration
+                full_response = ""
+                tool_calls = []
+                iteration_thinking = ""
+                started_thinking = False
+                finished_thinking = False
+                
+                # Process the streamed response
+                for chunk in next_response:
+                    message = chunk.get('message', {})
+                    
+                    # Handle thinking content
+                    if 'thinking' in message and message['thinking']:
+                        if not started_thinking and self.config['show_thinking']:
+                            self.console.print("\n[bold magenta]Thinking:[/bold magenta]")
+                            self.console.print("[dim]" + "=" * 60 + "[/dim]")
+                            started_thinking = True
+                        
+                        thinking_chunk = message['thinking']
+                        iteration_thinking += thinking_chunk
+                        full_thinking += thinking_chunk
+                        
+                        if self.config['show_thinking']:
+                            self.console.print(f"[dim]{thinking_chunk}[/dim]", end='')
+                    
+                    # Handle regular content
+                    if 'content' in message and message['content']:
+                        if started_thinking and not finished_thinking and self.config['show_thinking']:
+                            self.console.print("\n[dim]" + "=" * 60 + "[/dim]")
+                            finished_thinking = True
+                        
+                        content_chunk = message['content']
+                        full_response += content_chunk
+                    
+                    # Check for more tool calls
+                    if 'tool_calls' in message and message['tool_calls']:
+                        tool_calls = message['tool_calls']
+                
+                # If no more tool calls, we're done
+                if not tool_calls:
+                    self.console.print("\n[bold green]Final Response:[/bold green]")
+                    break
+                else:
+                    self.console.print("\n[dim]Model wants to use more tools...[/dim]")
+            
+            # Check if we hit max iterations
+            if iteration >= max_iterations and tool_calls:
+                self.console.print("\n[yellow]Warning: Maximum tool iterations reached. Stopping.[/yellow]")
+                self.console.print("[bold green]Partial Response:[/bold green]")
             
             # Render response with markdown if enabled
             if self.config['markdown_rendering'] and full_response:
