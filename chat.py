@@ -8,7 +8,7 @@ import os
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Callable, List
+from typing import Dict, Any, Callable, List, Optional
 import ollama
 from ddgs import DDGS
 from rich.console import Console
@@ -17,6 +17,9 @@ from rich.panel import Panel
 from rich.status import Status
 from rich.live import Live
 from rich.text import Text
+import requests
+import trafilatura
+from trafilatura.settings import use_config
 
 
 class ChatBot:
@@ -49,17 +52,6 @@ class ChatBot:
         default_config = {
             "model": "qwen3",
             "temperature": 0.7,
-            "system_prompt": (
-                "You are a helpful AI assistant with access to various tools. "
-                f"The current date is {datetime.now().strftime('%Y-%m-%d')}. "
-                "Use the web_search tool to get any information you don't know from after this date. "
-                "\n\nIMPORTANT: The web_search tool supports an 'iterations' parameter (1-5). "
-                "For complex questions requiring multiple searches:\n"
-                "- Call web_search(query='...', iterations=3) to request 3 search cycles\n"
-                "- After each search, you'll get results and guidance to refine your next search\n"
-                "- Each iteration should build on previous results with more specific queries\n"
-                "- Use this for deep research, fact-checking, or gathering comprehensive information"
-            ),
             "web_search_enabled": True,
             "max_search_results": 20,
             "thinking_enabled": True,
@@ -77,6 +69,28 @@ class ChatBot:
         else:
             self.save_config(default_config)
             return default_config
+    
+    def _get_system_prompt(self) -> str:
+        """Generate the system prompt dynamically."""
+        return (
+            "You are a helpful AI assistant with access to various tools. "
+            f"The current date is {datetime.now().strftime('%Y-%m-%d')}. "
+            "\n\nAvailable Search Tools:\n"
+            "- web_search: General web search using DuckDuckGo (use for most queries)\n"
+            "- news_search: Search recent news articles with date filtering (use for current events, breaking news)\n"
+            "- fetch_url_content: Extract full text content from any URL (use to read full articles from search results)\n"
+            "\n\nBest Practices:\n"
+            "1. Use web_search for general information and research\n"
+            "2. Use news_search when the user asks about recent events, news, or current affairs\n"
+            "3. Use fetch_url_content to get detailed information from specific URLs in search results\n"
+            "4. Chain tools together: search -> fetch_url_content for deeper research\n"
+            "\nThe web_search tool supports an 'iterations' parameter (1-5). "
+            "For complex questions requiring multiple searches:\n"
+            "- Call web_search(query='...', iterations=3) to request 3 search cycles\n"
+            "- After each search, you'll get results and guidance to refine your next search\n"
+            "- Each iteration should build on previous results with more specific queries\n"
+            "- Use this for deep research, fact-checking, or gathering comprehensive information"
+        )
     
     def _update_model_info(self):
         """Get model information including context window size from Ollama."""
@@ -133,7 +147,7 @@ class ChatBot:
         total_chars = 0
         
         # System prompt
-        total_chars += len(self.config['system_prompt'])
+        total_chars += len(self._get_system_prompt())
         
         # All messages
         for msg in messages:
@@ -210,6 +224,70 @@ class ChatBot:
             {
                 'type': 'function',
                 'function': {
+                    'name': 'news_search',
+                    'description': 'Search for recent news articles using DuckDuckGo News. Best for current events, breaking news, and time-sensitive information. Returns articles with publication dates, sources, and images.',
+                    'parameters': {
+                        'type': 'object',
+                        'required': ['keywords'],
+                        'properties': {
+                            'keywords': {
+                                'type': 'string',
+                                'description': 'Keywords to search for in news articles'
+                            },
+                            'region': {
+                                'type': 'string',
+                                'description': 'Region code (e.g., "us-en", "uk-en", "wt-wt" for worldwide). Default is "us-en".',
+                                'default': 'us-en'
+                            },
+                            'safesearch': {
+                                'type': 'string',
+                                'description': 'Safe search level: "on", "moderate", or "off". Default is "moderate".',
+                                'default': 'moderate',
+                                'enum': ['on', 'moderate', 'off']
+                            },
+                            'timelimit': {
+                                'type': 'string',
+                                'description': 'Time filter: "d" (day), "w" (week), "m" (month), or null for all time. Default is null.',
+                                'enum': ['d', 'w', 'm']
+                            },
+                            'max_results': {
+                                'type': 'integer',
+                                'description': 'Maximum number of news articles to return. Default is 10.',
+                                'default': 10,
+                                'minimum': 1,
+                                'maximum': 50
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                'type': 'function',
+                'function': {
+                    'name': 'fetch_url_content',
+                    'description': 'Fetch and extract clean text content from a webpage URL. Removes ads, navigation, and other boilerplate to return only the main article content. Use this to read full articles from search results.',
+                    'parameters': {
+                        'type': 'object',
+                        'required': ['url'],
+                        'properties': {
+                            'url': {
+                                'type': 'string',
+                                'description': 'The URL to fetch content from'
+                            },
+                            'max_length': {
+                                'type': 'integer',
+                                'description': 'Maximum character length of extracted content (to avoid context overflow). Default is 5000.',
+                                'default': 5000,
+                                'minimum': 500,
+                                'maximum': 20000
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                'type': 'function',
+                'function': {
                     'name': 'calculate',
                     'description': 'Perform mathematical calculations',
                     'parameters': {
@@ -274,6 +352,128 @@ class ChatBot:
             
             return output
         
+        def news_search_tool(
+            keywords: str,
+            region: str = "us-en",
+            safesearch: str = "moderate",
+            timelimit: str = None,
+            max_results: int = 10
+        ) -> str:
+            """Search for recent news articles using DuckDuckGo News API."""
+            if not self.config['web_search_enabled']:
+                return "News search is disabled (web_search_enabled is False)"
+            
+            try:
+                # Clamp max_results between 1 and 50
+                max_results = max(1, min(max_results, 50))
+                
+                ddgs = DDGS()
+                # Note: DDGS.news() uses 'query' parameter, not 'keywords'
+                results = ddgs.news(
+                    query=keywords,
+                    region=region,
+                    safesearch=safesearch,
+                    timelimit=timelimit,
+                    max_results=max_results
+                )
+                
+                if not results:
+                    return f"No news articles found for '{keywords}'"
+                
+                output = f"News search results for '{keywords}'"
+                if timelimit:
+                    time_desc = {"d": "past day", "w": "past week", "m": "past month"}.get(timelimit, "")
+                    output += f" ({time_desc})"
+                output += f" - Found {len(results)} articles:\n\n"
+                
+                for i, article in enumerate(results, 1):
+                    output += f"{i}. {article.get('title', 'No title')}\n"
+                    output += f"   Source: {article.get('source', 'Unknown source')}\n"
+                    output += f"   Date: {article.get('date', 'Unknown date')}\n"
+                    output += f"   URL: {article.get('url', 'No URL')}\n"
+                    
+                    body = article.get('body', '')
+                    if body:
+                        # Truncate body if too long
+                        body_preview = body[:300] + "..." if len(body) > 300 else body
+                        output += f"   Summary: {body_preview}\n"
+                    
+                    if article.get('image'):
+                        output += f"   Image: {article['image']}\n"
+                    
+                    output += "\n"
+                
+                output += "\n[TIP] Use fetch_url_content(url='...') to read the full article text from any URL above.\n"
+                
+                return output
+                
+            except Exception as e:
+                error_msg = f"Error performing news search: {str(e)}"
+                self.console.print(f"[red]{error_msg}[/red]")
+                return error_msg
+        
+        def fetch_url_content_tool(url: str, max_length: int = 5000) -> str:
+            """Fetch and extract clean text content from a URL using Trafilatura."""
+            if not url.startswith(('http://', 'https://')):
+                return "Error: Invalid URL format. URL must start with http:// or https://"
+            
+            try:
+                # Clamp max_length between 500 and 20000
+                max_length = max(500, min(max_length, 20000))
+                
+                # Configure trafilatura for better extraction
+                config = use_config()
+                config.set("DEFAULT", "EXTRACTION_TIMEOUT", "10")
+                
+                # Show status while fetching
+                self.console.print(f"[dim]Fetching content from {url[:60]}...[/dim]")
+                
+                # Fetch the URL content with timeout
+                downloaded = trafilatura.fetch_url(url)
+                
+                if not downloaded:
+                    # Fallback to requests if trafilatura fetch fails
+                    try:
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                        }
+                        response = requests.get(url, timeout=10, headers=headers)
+                        response.raise_for_status()
+                        downloaded = response.text
+                    except Exception as req_error:
+                        return f"Error fetching URL: Could not download content from {url}. Error: {str(req_error)}"
+                
+                # Extract main content using trafilatura
+                content = trafilatura.extract(
+                    downloaded,
+                    include_formatting=False,
+                    include_links=False,
+                    include_images=False,
+                    include_tables=True,
+                    config=config,
+                    favor_recall=True  # Get more content rather than being too conservative
+                )
+                
+                if not content:
+                    return f"Error: Could not extract readable content from {url}. The page may be JavaScript-heavy or behind a paywall."
+                
+                # Truncate to max_length if needed
+                if len(content) > max_length:
+                    content = content[:max_length] + f"\n\n[Content truncated at {max_length} characters. Original length: {len(content)} characters]"
+                
+                output = f"Content extracted from {url}:\n"
+                output += "=" * 60 + "\n\n"
+                output += content
+                output += "\n\n" + "=" * 60
+                output += f"\n[Extracted {len(content)} characters]"
+                
+                return output
+                
+            except Exception as e:
+                error_msg = f"Error fetching content from {url}: {str(e)}"
+                self.console.print(f"[red]{error_msg}[/red]")
+                return error_msg
+        
         def calculate_tool(expression: str) -> str:
             """Perform calculation."""
             try:
@@ -297,6 +497,8 @@ class ChatBot:
         
         return {
             'web_search': web_search_tool,
+            'news_search': news_search_tool,
+            'fetch_url_content': fetch_url_content_tool,
             'calculate': calculate_tool,
             'get_current_time': get_current_time_tool
         }
@@ -383,7 +585,7 @@ class ChatBot:
         
         # Prepare messages for Ollama
         ollama_messages = [
-            {'role': 'system', 'content': self.config['system_prompt'] + ""}
+            {'role': 'system', 'content': self._get_system_prompt()}
         ]
         
         # Add conversation history
@@ -657,7 +859,7 @@ class ChatBot:
                     elif user_input == '/context':
                         # Prepare messages for context calculation
                         temp_messages = [
-                            {'role': 'system', 'content': self.config['system_prompt']}
+                            {'role': 'system', 'content': self._get_system_prompt()}
                         ]
                         for msg in self.messages:
                             temp_messages.append({

@@ -1,3 +1,4 @@
 /chat
 /chat_logs
 config.json
+__pycache__
