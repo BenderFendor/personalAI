@@ -193,6 +193,24 @@ class ToolExecutor:
         if not url.startswith(('http://', 'https://')):
             return "Error: Invalid URL format. URL must start with http:// or https://"
         
+        # Check for unsupported content types/URLs
+        unsupported_patterns = [
+            'youtube.com', 'youtu.be',  # Video platforms
+            'vimeo.com', 'dailymotion.com',
+            'twitch.tv', 'tiktok.com',
+            '.mp4', '.avi', '.mov', '.wmv', '.flv',  # Video files
+            '.mp3', '.wav', '.ogg', '.flac',  # Audio files
+            '.pdf',  # PDFs (could be supported separately in future)
+            '.zip', '.rar', '.tar', '.gz',  # Archives
+            '.exe', '.dmg', '.apk',  # Executables
+        ]
+        
+        url_lower = url.lower()
+        for pattern in unsupported_patterns:
+            if pattern in url_lower:
+                content_type = "video" if any(vid in pattern for vid in ['youtube', 'youtu', 'vimeo', 'mp4', 'avi', 'mov']) else "unsupported content"
+                return f"Error: Cannot extract text from {content_type}. URL contains {pattern}. Please search for text-based articles or documentation instead."
+        
         try:
             max_length = max(500, min(max_length, 20000))
             
@@ -200,6 +218,26 @@ class ToolExecutor:
             config.set("DEFAULT", "EXTRACTION_TIMEOUT", "10")
             
             self.console.print(f"[dim]Fetching content from {url[:60]}...[/dim]")
+            
+            # First check content type with a HEAD request
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                head_response = requests.head(url, timeout=5, headers=headers, allow_redirects=True)
+                content_type = head_response.headers.get('content-type', '').lower()
+                
+                # Check if content type is not HTML/text
+                if content_type and not any(ct in content_type for ct in ['text/html', 'text/plain', 'application/xhtml']):
+                    if 'video' in content_type or 'audio' in content_type:
+                        return f"Error: Cannot extract text from media content (Content-Type: {content_type}). Please search for text-based articles."
+                    elif 'pdf' in content_type:
+                        return f"Error: PDF content detected. PDF text extraction not currently supported."
+                    elif any(binary in content_type for binary in ['image', 'application/octet-stream', 'application/zip']):
+                        return f"Error: Binary content detected (Content-Type: {content_type}). Cannot extract text."
+            except:
+                # If HEAD request fails, continue with normal fetch attempt
+                pass
             
             downloaded = trafilatura.fetch_url(url)
             

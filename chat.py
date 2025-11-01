@@ -346,7 +346,11 @@ class ChatBot:
                         self.console.print(f"   [{idx}] [green]✓ Success[/green]")
                         any_fetched = True
                     else:
-                        self.console.print(f"   [{idx}] [red]✗ {content[:50]}[/red]")
+                        # Skip unsupported content (videos, etc.) silently, only show other errors
+                        if 'Cannot extract text from' in content or 'not currently supported' in content:
+                            self.console.print(f"   [{idx}] [dim]⊘ Skipped (unsupported content)[/dim]")
+                        else:
+                            self.console.print(f"   [{idx}] [red]✗ {content[:70]}[/red]")
                 
                 except Exception as e:
                     self.console.print(f"   [{idx}] [red]✗ Error: {str(e)[:50]}[/red]")
