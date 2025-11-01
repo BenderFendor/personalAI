@@ -6,6 +6,7 @@ from chat import ChatBot
 from utils.keyboard import KeyboardHandler
 from utils.sidebar import ChatSidebar
 from rich.panel import Panel
+from rich.markup import escape
 
 
 class ChatCLI:
@@ -49,7 +50,7 @@ class ChatCLI:
                 self._exit_chat()
                 break
             except Exception as e:
-                self.console.print(f"\n[red]Unexpected error: {e}[/red]")
+                self.console.print(f"\n[red]Unexpected error: {escape(str(e))}[/red]")
     
     def _handle_command(self, command: str) -> bool:
         """Handle slash commands.
@@ -177,7 +178,7 @@ class ChatCLI:
             self.console.print("\n[yellow]Note: This is a read-only view. Start chatting to begin a new session.[/yellow]")
             
         except Exception as e:
-            self.console.print(f"[red]Error loading session: {e}[/red]")
+            self.console.print(f"[red]Error loading session: {escape(str(e))}[/red]")
     
     def _exit_chat(self) -> None:
         """Exit chat and save log."""

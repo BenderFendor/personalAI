@@ -8,6 +8,7 @@ import trafilatura
 from trafilatura.settings import use_config
 from ddgs import DDGS
 from rich.console import Console
+from rich.markup import escape
 
 
 class ToolExecutor:
@@ -108,7 +109,7 @@ class ToolExecutor:
             
         except Exception as e:
             error_msg = f"Error performing web search: {str(e)}"
-            self.console.print(f"[red]{error_msg}[/red]")
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
             return error_msg
     
     def news_search(
@@ -177,7 +178,7 @@ class ToolExecutor:
             
         except Exception as e:
             error_msg = f"Error performing news search: {str(e)}"
-            self.console.print(f"[red]{error_msg}[/red]")
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
             return error_msg
     
     def fetch_url_content(self, url: str, max_length: int = 5000) -> str:
@@ -279,7 +280,7 @@ class ToolExecutor:
             
         except Exception as e:
             error_msg = f"Error fetching content from {url}: {str(e)}"
-            self.console.print(f"[red]{error_msg}[/red]")
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
             return error_msg
     
     def calculate(self, expression: str) -> str:

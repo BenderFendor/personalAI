@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 import json
 import ollama
 from rich.console import Console
+from rich.markup import escape
 
 from models import Message, ContextUsage
 from config_manager import ConfigManager
@@ -204,7 +205,7 @@ class ChatBot:
             
         except Exception as e:
             error_msg = f"Error: {str(e)}"
-            self.console.print(f"\n[red]ERROR: {error_msg}[/red]")
+            self.console.print(f"\n[red]ERROR: {escape(error_msg)}[/red]")
             return error_msg
     
     def _stream_response(self, messages: List[Dict[str, Any]]) -> tuple[str, str, list]:
@@ -350,10 +351,10 @@ class ChatBot:
                         if 'Cannot extract text from' in content or 'not currently supported' in content:
                             self.console.print(f"   [{idx}] [dim]⊘ Skipped (unsupported content)[/dim]")
                         else:
-                            self.console.print(f"   [{idx}] [red]✗ {content[:70]}[/red]")
+                            self.console.print(f"   [{idx}] [red]✗ {escape(content[:70])}[/red]")
                 
                 except Exception as e:
-                    self.console.print(f"   [{idx}] [red]✗ Error: {str(e)[:50]}[/red]")
+                    self.console.print(f"   [{idx}] [red]✗ Error: {escape(str(e)[:50])}[/red]")
             
             if any_fetched:
                 fetched_content += "\n" + "=" * 60
