@@ -23,7 +23,9 @@ personalAI/
 │   ├── __init__.py
 │   ├── context.py         # Context window calculations
 │   ├── logger.py          # Chat logging
-│   └── display.py         # Rich console display helpers
+│   ├── display.py         # Rich console display helpers
+│   ├── keyboard.py        # Keyboard input handling
+│   └── sidebar.py         # Chat history sidebar UI
 │
 └── chat_logs/             # Saved chat sessions
     └── chat_*.md
@@ -70,6 +72,8 @@ personalAI/
 - **context.py**: Context window size detection and token estimation
 - **logger.py**: Save chat sessions to markdown files
 - **display.py**: Rich console formatting and display helpers
+- **keyboard.py**: Keyboard input handling for special keys
+- **sidebar.py**: Interactive chat history sidebar UI
 
 ## 🚀 Usage
 
@@ -92,10 +96,28 @@ python chat.py
 - `/clear` - Clear chat history
 - `/config` - Show configuration
 - `/context` - Show context window usage
+- `/history` - View past chat sessions sidebar
 - `/toggle-tools` - Toggle tool use on/off
 - `/toggle-thinking` - Toggle thinking display
 - `/toggle-markdown` - Toggle markdown rendering
 - `/help` - Show help message
+
+### Keyboard Shortcuts
+
+- **Ctrl+]** - Toggle chat history sidebar (browse and load past sessions)
+- **Ctrl+C** - Interrupt current operation
+
+### Chat History Sidebar
+
+Press **Ctrl+]** or type `/history` to open an interactive sidebar showing all past chat sessions:
+- Use **↑/↓** arrow keys to navigate through sessions
+- Press **Enter** to view the selected session
+- Press **Esc** or **Ctrl+]** again to close the sidebar
+
+The sidebar displays:
+- Date and time of each session
+- Preview of the first user message
+- Easy navigation to review past conversations
 
 ## 🔧 Configuration
 

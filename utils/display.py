@@ -150,10 +150,15 @@ class DisplayHelper:
   [cyan]/clear[/cyan] - Clear chat history
   [cyan]/config[/cyan] - Show configuration
   [cyan]/context[/cyan] - Show context window usage
+  [cyan]/history[/cyan] - View past chat sessions (or press Ctrl+])
   [cyan]/toggle-tools[/cyan] - Toggle tool use on/off
   [cyan]/toggle-thinking[/cyan] - Toggle thinking display on/off
   [cyan]/toggle-markdown[/cyan] - Toggle markdown rendering
   [cyan]/help[/cyan] - Show this help message
+
+[bold]Keyboard Shortcuts:[/bold]
+  [cyan]Ctrl+][/cyan] - Toggle chat history sidebar
+  [cyan]Ctrl+C[/cyan] - Interrupt current operation
 """
         self.console.print(Panel(help_text, border_style="blue"))
     

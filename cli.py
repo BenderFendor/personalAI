@@ -1,6 +1,11 @@
 """Command-line interface for the Personal AI Chatbot."""
 
+import sys
+import select
 from chat import ChatBot
+from utils.keyboard import KeyboardHandler
+from utils.sidebar import ChatSidebar
+from rich.panel import Panel
 
 
 class ChatCLI:
@@ -15,6 +20,8 @@ class ChatCLI:
         self.chatbot = chatbot
         self.console = chatbot.console
         self.display = chatbot.display
+        self.sidebar = ChatSidebar(self.console)
+        self.keyboard = KeyboardHandler()
     
     def run(self) -> None:
         """Run the interactive chat loop."""
@@ -99,10 +106,78 @@ class ChatCLI:
         elif command == '/help':
             self.display.display_help()
         
+        elif command == '/history':
+            self._show_sidebar()
+        
         else:
             self.console.print("[red]Unknown command. Type /help for available commands.[/red]")
         
         return False
+    
+    def _show_sidebar(self) -> None:
+        """Show sidebar with chat history navigation."""
+        self.console.clear()
+        self.sidebar.render()
+        
+        # Navigation loop
+        while True:
+            key = self.keyboard.get_key()
+            
+            if not key:
+                break
+            
+            # Handle navigation keys
+            if key == self.keyboard.UP:
+                self.sidebar.move_up()
+                self.console.clear()
+                self.sidebar.render()
+            
+            elif key == self.keyboard.DOWN:
+                self.sidebar.move_down()
+                self.console.clear()
+                self.sidebar.render()
+            
+            elif key == self.keyboard.ENTER:
+                # Load selected session
+                session = self.sidebar.get_selected_session()
+                if session:
+                    self.console.clear()
+                    self._load_session(session)
+                break
+            
+            elif key == self.keyboard.ESC or self.keyboard.is_ctrl_tab(key):
+                # Close sidebar
+                self.console.clear()
+                break
+            
+            elif key == self.keyboard.CTRL_C:
+                self.console.clear()
+                break
+        
+        # Redisplay the interface
+        self.console.print("\n[dim]Press Ctrl+] to open chat history[/dim]")
+    
+    def _load_session(self, session: dict) -> None:
+        """Load a previous chat session.
+        
+        Args:
+            session: Session dictionary with path and metadata
+        """
+        try:
+            with open(session['path'], 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            self.console.print(Panel(
+                f"[green]Loaded session from {session['datetime'].strftime('%Y-%m-%d %H:%M')}[/green]\n\n"
+                f"[dim]{content[:500]}...[/dim]",
+                title="Previous Chat Session",
+                border_style="green"
+            ))
+            
+            self.console.print("\n[yellow]Note: This is a read-only view. Start chatting to begin a new session.[/yellow]")
+            
+        except Exception as e:
+            self.console.print(f"[red]Error loading session: {e}[/red]")
     
     def _exit_chat(self) -> None:
         """Exit chat and save log."""
