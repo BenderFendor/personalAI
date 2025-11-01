@@ -112,6 +112,23 @@ class ChatCLI:
         elif command == '/history':
             self._show_sidebar()
         
+        elif command == '/rag-status':
+            self._rag_status()
+        
+        elif command.startswith('/rag-index '):
+            file_path = command[11:].strip()
+            self._rag_index(file_path)
+        
+        elif command.startswith('/rag-search '):
+            query = command[12:].strip()
+            self._rag_search(query)
+        
+        elif command == '/rag-clear':
+            self._rag_clear()
+        
+        elif command == '/rag-rebuild':
+            self._rag_rebuild()
+        
         else:
             self.console.print("[red]Unknown command. Type /help for available commands.[/red]")
         
@@ -191,3 +208,56 @@ class ChatCLI:
         self.console.print("\n[yellow]Saving chat log...[/yellow]")
         self.chatbot.save_chat_log()
         self.console.print("[green]Goodbye![/green]")
+    
+    def _rag_status(self) -> None:
+        """Display RAG system status."""
+        try:
+            status = self.chatbot.get_rag_status()
+            self.console.print(f"\n[bold cyan]RAG System Status[/bold cyan]")
+            self.console.print(f"Enabled: [green]{status['enabled']}[/green]")
+            self.console.print(f"Documents indexed: [yellow]{status['doc_count']}[/yellow]")
+            self.console.print(f"Collection: {status['collection']}")
+            self.console.print(f"Embedding model: {status['embedding_model']}")
+        except Exception as e:
+            self.console.print(f"[red]Error getting RAG status: {escape(str(e))}[/red]")
+    
+    def _rag_index(self, file_path: str) -> None:
+        """Index a file into the RAG knowledge base."""
+        try:
+            self.console.print(f"[yellow]Indexing {file_path}...[/yellow]")
+            count = self.chatbot.rag_index_file(file_path)
+            self.console.print(f"[green]Successfully indexed {count} chunks from {file_path}[/green]")
+        except Exception as e:
+            self.console.print(f"[red]Error indexing file: {escape(str(e))}[/red]")
+    
+    def _rag_search(self, query: str) -> None:
+        """Test RAG retrieval without generating response."""
+        try:
+            results = self.chatbot.rag_search(query)
+            self.console.print(f"\n[bold cyan]RAG Search Results for: {query}[/bold cyan]\n")
+            for i, doc in enumerate(results, 1):
+                self.console.print(f"[yellow]Result {i}[/yellow] (Similarity: {doc['similarity']:.3f})")
+                self.console.print(Panel(escape(doc['content'][:200] + '...'), border_style="dim"))
+        except Exception as e:
+            self.console.print(f"[red]Error searching: {escape(str(e))}[/red]")
+    
+    def _rag_clear(self) -> None:
+        """Clear the RAG vector database."""
+        try:
+            confirm = self.console.input("[yellow]Are you sure you want to clear the vector database? (yes/no): [/yellow]")
+            if confirm.lower() == 'yes':
+                self.chatbot.rag_clear()
+                self.console.print("[green]Vector database cleared![/green]")
+            else:
+                self.console.print("[dim]Cancelled.[/dim]")
+        except Exception as e:
+            self.console.print(f"[red]Error clearing database: {escape(str(e))}[/red]")
+    
+    def _rag_rebuild(self) -> None:
+        """Rebuild RAG index from source documents."""
+        try:
+            self.console.print("[yellow]Rebuilding RAG index...[/yellow]")
+            count = self.chatbot.rag_rebuild()
+            self.console.print(f"[green]Rebuilt index with {count} documents![/green]")
+        except Exception as e:
+            self.console.print(f"[red]Error rebuilding index: {escape(str(e))}[/red]")

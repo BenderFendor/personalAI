@@ -14,15 +14,17 @@ from rich.markup import escape
 class ToolExecutor:
     """Handles execution of all tool functions."""
     
-    def __init__(self, config: Dict[str, Any], console: Console):
+    def __init__(self, config: Dict[str, Any], console: Console, web_search_rag=None):
         """Initialize tool executor.
         
         Args:
             config: Configuration dictionary
             console: Rich console for output
+            web_search_rag: Optional WebSearchRAG instance for auto-indexing
         """
         self.config = config
         self.console = console
+        self.web_search_rag = web_search_rag
         self._tools = self._register_tools()
     
     def _register_tools(self) -> Dict[str, callable]:
@@ -80,6 +82,22 @@ class ToolExecutor:
             
             if not results:
                 return f"No search results found for '{query}'"
+            
+            # Auto-index search results into RAG if enabled
+            if self.web_search_rag and self.web_search_rag.auto_index:
+                try:
+                    search_data = []
+                    for result in results:
+                        search_data.append({
+                            'url': result.get('href', ''),
+                            'title': result.get('title', 'Untitled'),
+                            'content': result.get('body', '')
+                        })
+                    
+                    indexed_count = self.web_search_rag.index_search_results(search_data, collection_prefix="websearch")
+                    self.console.print(f"[dim]✓ Indexed {indexed_count} chunks from search results into RAG[/dim]")
+                except Exception as e:
+                    self.console.print(f"[dim yellow]Warning: Could not index search results: {str(e)[:50]}[/dim yellow]")
             
             output = f"Search results for '{query}'"
             
@@ -269,6 +287,27 @@ class ToolExecutor:
             
             if len(content) > max_length:
                 content = content[:max_length] + f"\n\n[Content truncated at {max_length} characters. Original: {len(content)} chars]"
+            
+            # Auto-index fetched content into RAG if enabled
+            if self.web_search_rag and self.web_search_rag.auto_index:
+                try:
+                    # Extract title from HTML metadata using trafilatura, fallback to cleaned URL segment
+                    meta = trafilatura.metadata.extract_metadata(trafilatura.metadata.parse_html(downloaded))
+                    title = meta.title if meta and meta.title else None
+                    if not title:
+                        # Fallback: use domain and first non-empty path segment
+                        from urllib.parse import urlparse
+                        parsed = urlparse(url)
+                        path_segments = [seg for seg in parsed.path.split('/') if seg and not seg.endswith(('.html', '.htm', '.php', '.asp'))]
+                        title = f"{parsed.netloc} - {path_segments[0]}" if path_segments else parsed.netloc
+                    indexed_count = self.web_search_rag.index_single_page(
+                        url=url,
+                        content=content,
+                        title=title
+                    )
+                    self.console.print(f"[dim]✓ Indexed {indexed_count} chunks from fetched page into RAG[/dim]")
+                except Exception as e:
+                    self.console.print(f"[dim yellow]Warning: Could not index fetched content: {str(e)[:50]}[/dim yellow]")
             
             output = f"Content extracted from {url}:\n"
             output += "=" * 60 + "\n\n"

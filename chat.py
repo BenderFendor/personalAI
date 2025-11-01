@@ -28,12 +28,20 @@ class ChatBot:
         self.context_calc = ContextCalculator(self.config.model)
         self.logger = ChatLogger(logs_dir)
         self.display = DisplayHelper(self.console)
-        self.tool_executor = ToolExecutor(self.config.get_all(), self.console)
         
         self.messages: List[Message] = []
         self.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.tools = get_tool_definitions()
         self.url_cache: Dict[str, str] = {}
+        
+        # Initialize RAG if enabled
+        self.rag_retriever = None
+        self.web_search_rag = None
+        if self.config.get('rag_enabled', False):
+            self._initialize_rag()
+        
+        # Initialize tool executor (after RAG initialization)
+        self.tool_executor = ToolExecutor(self.config.get_all(), self.console, self.web_search_rag)
     
     def _get_system_prompt(self) -> str:
         """Generate the system prompt dynamically.
@@ -50,6 +58,17 @@ class ChatBot:
             "- Do NOT ask the user to fetch URLs - they're already being fetched for you.\n"
         ) if auto_fetch_enabled else ""
         
+        rag_info = ""
+        if self.config.get('rag_enabled', False) and self.rag_retriever:
+            doc_count = self.rag_retriever.store.count()
+            rag_info = (
+                f"\n\nKnowledge Base (RAG):\n"
+                f"- You have access to a knowledge base with {doc_count} indexed documents\n"
+                "- When answering questions, relevant context from the knowledge base will be provided\n"
+                "- Always cite sources from the knowledge base when using that information\n"
+                "- If web search results are indexed, you can retrieve and use that information too\n"
+            )
+        
         return (
             "You are a helpful AI assistant with access to various tools. "
             f"The current date is {datetime.now().strftime('%Y-%m-%d')}. "
@@ -65,6 +84,7 @@ class ChatBot:
             "5. If you don't have the context or information use web_search\n"
             "6. Give concise, accurate, and well-sourced answers based on tool results using snippets quotes and excerpts when needed from the sources\n"
             f"{fetch_info}"
+            f"{rag_info}"
             "\nThe web_search tool supports an 'iterations' parameter (1-5). "
             "For complex questions requiring multiple searches:\n"
             "- Call web_search(query='...', iterations=3) to request 3 search cycles\n"
@@ -365,3 +385,129 @@ class ChatBot:
         except Exception as e:
             self.console.print(f"[yellow]Warning: Auto-fetch failed: {str(e)}[/yellow]")
             return tool_result
+    
+    def _initialize_rag(self) -> None:
+        """Initialize RAG system components."""
+        try:
+            from rag import OllamaEmbeddingsWrapper, ChromaVectorStore, RAGRetriever, WebSearchRAG
+            
+            # Initialize embeddings
+            embedding_model = self.config.get('embedding_model', 'gemma:2b')
+            embeddings = OllamaEmbeddingsWrapper(
+                model=embedding_model,
+                base_url="http://localhost:11434"
+            )
+            
+            # Initialize vector store
+            db_path = self.config.get('chroma_db_path', './chroma_db')
+            collection_name = self.config.get('rag_collection', 'rag_documents')
+            vector_store = ChromaVectorStore(
+                path=db_path,
+                collection_name=collection_name
+            )
+            
+            # Initialize retriever
+            self.rag_retriever = RAGRetriever(embeddings, vector_store)
+            
+            # Initialize web search RAG if enabled
+            if self.config.get('web_search_rag_enabled', True):
+                chunk_size = self.config.get('chunk_size', 500)
+                chunk_overlap = self.config.get('chunk_overlap', 100)
+                auto_index = self.config.get('web_search_auto_index', True)
+                
+                self.web_search_rag = WebSearchRAG(
+                    self.rag_retriever,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    auto_index=auto_index
+                )
+            
+            self.console.print("[dim]RAG system initialized[/dim]")
+        except ImportError as e:
+            self.console.print(f"[yellow]Warning: RAG dependencies not available: {e}[/yellow]")
+            self.rag_retriever = None
+            self.web_search_rag = None
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: Failed to initialize RAG: {e}[/yellow]")
+            self.rag_retriever = None
+            self.web_search_rag = None
+    
+    def get_rag_status(self) -> Dict[str, Any]:
+        """Get RAG system status."""
+        if not self.rag_retriever:
+            return {
+                'enabled': False,
+                'doc_count': 0,
+                'collection': 'N/A',
+                'embedding_model': 'N/A'
+            }
+        
+        return {
+            'enabled': True,
+            'doc_count': self.rag_retriever.store.count(),
+            'collection': self.config.get('rag_collection', 'rag_documents'),
+            'embedding_model': self.config.get('embedding_model', 'gemma:2b')
+        }
+    
+    def rag_index_file(self, file_path: str) -> int:
+        """Index a file into the RAG knowledge base.
+        
+        Args:
+            file_path: Path to file to index
+            
+        Returns:
+            Number of chunks indexed
+        """
+        if not self.rag_retriever:
+            raise RuntimeError("RAG system not initialized")
+        
+        # Read file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Use web_search_rag for chunking if available
+        if self.web_search_rag:
+            return self.web_search_rag.index_single_page(
+                url=f"file://{file_path}",
+                content=content,
+                title=file_path
+            )
+        else:
+            # Simple indexing without chunking
+            self.rag_retriever.index_texts([content], ids_prefix="file")
+            return 1
+    
+    def rag_search(self, query: str) -> List[Dict]:
+        """Search RAG knowledge base.
+        
+        Args:
+            query: Search query
+            
+        Returns:
+            List of relevant documents
+        """
+        if not self.rag_retriever:
+            raise RuntimeError("RAG system not initialized")
+        
+        top_k = self.config.get('rag_top_k', 3)
+        return self.rag_retriever.retrieve(query, top_k=top_k)
+    
+    def rag_clear(self) -> None:
+        """Clear the RAG vector database."""
+        if not self.rag_retriever:
+            raise RuntimeError("RAG system not initialized")
+        
+        self.rag_retriever.store.reset()
+    
+    def rag_rebuild(self) -> int:
+        """Placeholder: Returns current document count; does not rebuild RAG index.
+        
+        Returns:
+            Number of documents currently indexed (no rebuild performed)
+        """
+        if not self.rag_retriever:
+            raise RuntimeError("RAG system not initialized")
+        
+        # This is a placeholder - implement actual rebuild logic based on your document sources
+        # For now, just return current count
+        return self.rag_retriever.store.count()
