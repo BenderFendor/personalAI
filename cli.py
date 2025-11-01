@@ -50,7 +50,9 @@ class ChatCLI:
                 self._exit_chat()
                 break
             except Exception as e:
-                self.console.print(f"\n[red]Unexpected error: {escape(str(e))}[/red]")
+                # Avoid markup parsing on arbitrary exception text by escaping and
+                # using the style argument instead of inline markup tags.
+                self.console.print(f"\nUnexpected error: {escape(str(e))}", style="red")
     
     def _handle_command(self, command: str) -> bool:
         """Handle slash commands.
@@ -168,17 +170,21 @@ class ChatCLI:
             with open(session['path'], 'r', encoding='utf-8') as f:
                 content = f.read()
             
+            # Escape file content before rendering inside the panel to avoid
+            # accidental markup interpretation from the saved chat text.
+            loaded_header = f"Loaded session from {session['datetime'].strftime('%Y-%m-%d %H:%M')}"
+            snippet = escape(content[:500]) + "..."
             self.console.print(Panel(
-                f"[green]Loaded session from {session['datetime'].strftime('%Y-%m-%d %H:%M')}[/green]\n\n"
-                f"[dim]{content[:500]}...[/dim]",
+                f"{loaded_header}\n\n{snippet}",
                 title="Previous Chat Session",
                 border_style="green"
             ))
-            
-            self.console.print("\n[yellow]Note: This is a read-only view. Start chatting to begin a new session.[/yellow]")
+
+            self.console.print("\nNote: This is a read-only view. Start chatting to begin a new session.", style="yellow")
             
         except Exception as e:
-            self.console.print(f"[red]Error loading session: {escape(str(e))}[/red]")
+            # Use style instead of inline markup when printing dynamic error text.
+            self.console.print(f"Error loading session: {escape(str(e))}", style="red")
     
     def _exit_chat(self) -> None:
         """Exit chat and save log."""
