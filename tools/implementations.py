@@ -38,7 +38,8 @@ class ToolExecutor:
             'news_search': self.news_search,
             'fetch_url_content': self.fetch_url_content,
             'calculate': self.calculate,
-            'get_current_time': self.get_current_time
+            'get_current_time': self.get_current_time,
+            'search_vector_db': self.search_vector_db
         }
     
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -292,7 +293,9 @@ class ToolExecutor:
             if self.web_search_rag and self.web_search_rag.auto_index:
                 try:
                     # Extract title from HTML metadata using trafilatura, fallback to cleaned URL segment
-                    meta = trafilatura.metadata.extract_metadata(trafilatura.metadata.parse_html(downloaded))
+                    from trafilatura.metadata import extract_metadata
+                    from trafilatura.htmlprocessing import extract_html_metadata
+                    meta = extract_metadata(extract_html_metadata(downloaded))
                     title = meta.title if meta and meta.title else None
                     if not title:
                         # Fallback: use domain and first non-empty path segment
@@ -351,3 +354,45 @@ class ToolExecutor:
         """
         now = datetime.now()
         return f"Current date and time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    def search_vector_db(self, query: str, top_k: int = 3) -> str:
+        """Search the vector database for relevant documents.
+        
+        Args:
+            query: The search query.
+            top_k: The number of results to return.
+            
+        Returns:
+            Formatted search results from the vector database.
+        """
+        if not self.web_search_rag or not hasattr(self.web_search_rag, 'retriever'):
+            return "Error: The RAG vector database is not available or initialized."
+        
+        try:
+            top_k = max(1, min(top_k, 10))
+            results = self.web_search_rag.retriever.retrieve(query, top_k=top_k)
+            
+            if not results:
+                return f"No documents found in the vector database for the query: '{query}'"
+            
+            output = f"Vector database search results for '{query}':\n\n"
+            for i, doc in enumerate(results, 1):
+                metadata = doc.get('metadata', {})
+                source = metadata.get('source', 'N/A')
+                title = metadata.get('title', 'Untitled')
+                similarity = doc.get('similarity', 0.0)
+                
+                output += f"{i}. Title: {title}\n"
+                output += f"   Source: {source}\n"
+                output += f"   Relevance Score: {similarity:.3f}\n"
+                
+                content_preview = doc.get('content', '')
+                if content_preview:
+                    content_preview = content_preview[:300].strip() + "..." if len(content_preview) > 300 else content_preview.strip()
+                    output += f"   Content Snippet: {content_preview}\n\n"
+            
+            return output
+        except Exception as e:
+            error_msg = f"Error searching vector database: {str(e)}"
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
+            return error_msg

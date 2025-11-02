@@ -125,5 +125,29 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     'properties': {}
                 }
             }
+        },
+        {
+            'type': 'function',
+            'function': {
+                'name': 'search_vector_db',
+                'description': 'Search the internal vector database (RAG) for relevant indexed documents, files, or web pages. Use this to find information from previously indexed content.',
+                'parameters': {
+                    'type': 'object',
+                    'required': ['query'],
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'The search query to run against the vector database.'
+                        },
+                        'top_k': {
+                            'type': 'integer',
+                            'description': 'The number of top results to return. Default is 3.',
+                            'default': 3,
+                            'minimum': 1,
+                            'maximum': 10
+                        }
+                    }
+                }
+            }
         }
     ]

@@ -1,4 +1,5 @@
 /chat
 /chat_logs
 config.json
+chroma.sqlite3
 __pycache__

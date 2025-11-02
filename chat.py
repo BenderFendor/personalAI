@@ -392,7 +392,7 @@ class ChatBot:
             from rag import OllamaEmbeddingsWrapper, ChromaVectorStore, RAGRetriever, WebSearchRAG
             
             # Initialize embeddings
-            embedding_model = self.config.get('embedding_model', 'gemma:2b')
+            embedding_model = self.config.get('embedding_model', 'embeddinggemma')
             embeddings = OllamaEmbeddingsWrapper(
                 model=embedding_model,
                 base_url="http://localhost:11434"
@@ -446,7 +446,7 @@ class ChatBot:
             'enabled': True,
             'doc_count': self.rag_retriever.store.count(),
             'collection': self.config.get('rag_collection', 'rag_documents'),
-            'embedding_model': self.config.get('embedding_model', 'gemma:2b')
+            'embedding_model': self.config.get('embedding_model', 'embeddinggemma')
         }
     
     def rag_index_file(self, file_path: str) -> int:

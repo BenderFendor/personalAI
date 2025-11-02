@@ -19,7 +19,7 @@ class OllamaEmbeddingsWrapper:
     """Simple wrapper around the Ollama embeddings endpoint.
 
     Usage:
-        emb = OllamaEmbeddingsWrapper(model="gemma:2b")
+        emb = OllamaEmbeddingsWrapper(model="embeddinggemma")
         vectors = emb.embed_documents(["doc1", "doc2"])
         qvec = emb.embed_query("some question")
 
@@ -31,7 +31,7 @@ class OllamaEmbeddingsWrapper:
 
     def __init__(
         self,
-        model: str = "gemma:2b",
+        model: str = "embeddinggemma",
         base_url: Optional[str] = None,
         batch_size: int = 8,
         truncate_dim: Optional[int] = None,
