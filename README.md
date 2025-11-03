@@ -161,6 +161,11 @@ Edit `config.json` to customize:
 - **Color Coding**: Context usage color-coded by level
 - **Structured Output**: Clean, organized information display
 
+### Clarify-first and Sourced Answers
+- The system prompt instructs the model to ask up to two short clarifying questions when a query is ambiguous.
+- When external facts are required, it uses `web_search` and cites 2–4 sources in answers.
+- If assumptions are needed (e.g., time-sensitive requests), the model lists them explicitly and notes any open questions.
+
 ## 📝 Adding New Tools
 
 1. Add tool definition in `tools/definitions.py`:

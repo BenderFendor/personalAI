@@ -3,3 +3,5 @@
 config.json
 chroma.sqlite3
 __pycache__
+.venv
+.env

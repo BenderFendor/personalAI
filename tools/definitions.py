@@ -14,14 +14,21 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
             'type': 'function',
             'function': {
                 'name': 'web_search',
-                'description': 'Search the web for current information using DuckDuckGo. Can perform multiple searches with reflection between each search. Use iterations parameter to control how many times to search and refine the query.',
+                'description': (
+                    'Search the web for current information using DuckDuckGo. '
+                    'Use this when you lack required facts, need to verify claims, the topic is time-sensitive, '
+                    'or the query references specific entities, releases, or documentation. '
+                    'Keep queries concise and constraint-rich (entities, year/version/OS). '
+                    'Helpful operators: quotes for exact phrases, site:example.com, filetype:pdf, OR for alternatives. '
+                    'Can perform multiple searches with reflection between each search via the iterations parameter.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'required': ['query'],
                     'properties': {
                         'query': {
                             'type': 'string',
-                            'description': 'The search query'
+                            'description': 'The search query (concise; include key entities and constraints like year/version/OS/region)'
                         },
                         'iterations': {
                             'type': 'integer',
