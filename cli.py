@@ -7,6 +7,8 @@ from utils.keyboard import KeyboardHandler
 from utils.sidebar import ChatSidebar
 from rich.panel import Panel
 from rich.markup import escape
+from rich.markdown import Markdown
+from rich.text import Text
 
 
 class ChatCLI:
@@ -186,23 +188,61 @@ class ChatCLI:
         try:
             with open(session['path'], 'r', encoding='utf-8') as f:
                 content = f.read()
-            
-            # Escape file content before rendering inside the panel to avoid
-            # accidental markup interpretation from the saved chat text.
-            loaded_header = f"Loaded session from {session['datetime'].strftime('%Y-%m-%d %H:%M')}"
-            snippet = escape(content[:500]) + "..."
-            self.console.print(Panel(
-                f"{loaded_header}\n\n{snippet}",
-                title="Previous Chat Session",
-                border_style="green"
-            ))
 
-            self.console.print("\nNote: This is a read-only view. Start chatting to begin a new session.", style="yellow")
+            # Show full markdown with scrolling so large logs are navigable.
+            title = "Previous Chat Session"
+            self._view_markdown_scrollable(content, title, session['datetime'])
             
         except Exception as e:
             # Use style instead of inline markup when printing dynamic error text.
             self.console.print(f"Error loading session: {escape(str(e))}", style="red")
     
+    def _view_markdown_scrollable(self, markdown_text: str, title: str, dt) -> None:
+        """Render markdown with Rich and allow scrolling through the content.
+        
+        This renders the markdown to ANSI once, then shows a viewport that can
+        be scrolled with the keyboard. This keeps the header visible and avoids
+        re-rendering on every key press for performance.
+        """
+        # Render markdown to ANSI using a capture buffer so we can paginate it.
+        md = Markdown(markdown_text)
+        with self.console.capture() as cap:
+            # Use a panel header during capture so wrapping matches terminal width.
+            self.console.print(Panel(md, title=f"Chat Log – {dt.strftime('%Y%m%d_%H%M%S')}", border_style="green"))
+        ansi_render = cap.get()
+
+        lines = ansi_render.splitlines()
+        total = len(lines)
+
+        # Compute viewport height: reserve space for borders/help on redraws
+        term_height = max(10, self.console.size.height)
+        viewport = max(3, term_height - 4)
+        offset = 0
+
+        def redraw() -> None:
+            self.console.clear()
+            start = offset
+            end = min(total, start + viewport)
+            slice_text = "\n".join(lines[start:end])
+            subtitle = f"[dim]{start + 1}-{end} of {total}  |  ↑/↓: Scroll  |  Enter/Esc: Close  |  Ctrl+]: Toggle history[/dim]"
+            self.console.print(Panel(Text.from_ansi(slice_text), title=title, subtitle=subtitle, border_style="green"))
+
+        redraw()
+        while True:
+            key = self.keyboard.get_key()
+            if not key:
+                break
+            if key == self.keyboard.UP:
+                if offset > 0:
+                    offset -= 1
+                    redraw()
+            elif key == self.keyboard.DOWN:
+                if offset < max(0, total - viewport):
+                    offset += 1
+                    redraw()
+            elif key in (self.keyboard.ENTER, self.keyboard.ESC) or self.keyboard.is_ctrl_tab(key) or key == self.keyboard.CTRL_C:
+                break
+
     def _exit_chat(self) -> None:
         """Exit chat and save log."""
         self.console.print("\n[yellow]Saving chat log...[/yellow]")

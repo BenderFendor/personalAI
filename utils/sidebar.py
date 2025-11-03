@@ -24,6 +24,8 @@ class ChatSidebar:
         self.console = console
         self.chat_logs_dir = Path(chat_logs_dir)
         self.selected_index = 0
+        # Top-most row index currently visible in the viewport
+        self.scroll_offset = 0
         self.sessions: List[Dict] = []
     
     def load_sessions(self) -> None:
@@ -88,7 +90,7 @@ class ChatSidebar:
             return "Error reading file"
     
     def render(self) -> None:
-        """Render the sidebar."""
+        """Render the sidebar with a scrollable viewport and a scrollbar."""
         self.load_sessions()
         
         if not self.sessions:
@@ -99,48 +101,101 @@ class ChatSidebar:
             ))
             return
         
-        # Create table
+        # Determine viewport size based on terminal height. Reserve a few lines for
+        # panel borders and headers so the top never scrolls off during render.
+        term_height = max(10, self.console.size.height)
+        # Heuristic: 6 lines for panel chrome + header; one row per session
+        max_visible_rows = max(3, term_height - 6)
+
+        total_rows = len(self.sessions)
+
+        # Keep the selected row within the viewport; prefer centering when possible
+        if self.selected_index < self.scroll_offset:
+            self.scroll_offset = self.selected_index
+        elif self.selected_index >= self.scroll_offset + max_visible_rows:
+            self.scroll_offset = self.selected_index - max_visible_rows + 1
+
+        # Clamp scroll offset
+        self.scroll_offset = max(0, min(self.scroll_offset, max(0, total_rows - max_visible_rows)))
+
+        start = self.scroll_offset
+        end = min(total_rows, start + max_visible_rows)
+        visible_sessions = self.sessions[start:end]
+
+        # Create table with a fixed width and no wrapping so each session maps to one row
         table = Table(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
-        table.add_column("", width=2)
-        table.add_column("Date & Time", style="dim", width=20)
-        table.add_column("Preview", width=50)
-        
+        table.add_column("", width=2, no_wrap=True)
+        table.add_column("Date & Time", style="dim", width=20, no_wrap=True, overflow="crop")
+        table.add_column("Preview", width=60, no_wrap=True, overflow="crop")
+
+        # Optional scrollbar column if content exceeds viewport
+        show_scrollbar = total_rows > max_visible_rows
+        if show_scrollbar:
+            table.add_column("", width=1, no_wrap=True)
+
         # Add rows
-        for i, session in enumerate(self.sessions):
+        for vis_i, session in enumerate(visible_sessions):
+            i = start + vis_i
             is_selected = (i == self.selected_index)
             marker = "▶" if is_selected else " "
-            
+
             date_str = session['datetime'].strftime("%Y-%m-%d %H:%M")
             preview = session['preview']
-            
-            style = "bold green" if is_selected else ""
-            
-            table.add_row(
-                f"[{style}]{marker}[/{style}]",
-                f"[{style}]{date_str}[/{style}]",
-                f"[{style}]{preview}[/{style}]"
-            )
-        
-        # Create panel
+
+            style = "bold green" if is_selected else None
+
+            # Only wrap with Rich markup tags if a style is present to avoid
+            # creating an empty closing tag ("[/]") which raises a Rich parse error.
+            marker_cell = f"[{style}]{marker}[/{style}]" if style else marker
+            date_cell = f"[{style}]{date_str}[/{style}]" if style else date_str
+            preview_cell = f"[{style}]{preview}[/{style}]" if style else preview
+
+            row_items = [marker_cell, date_cell, preview_cell]
+
+            if show_scrollbar:
+                # Render a simple scrollbar track with a thumb mapped to overall position
+                track_rows = max_visible_rows
+                if total_rows <= 1:
+                    thumb_row = 0
+                else:
+                    thumb_row = int((self.selected_index / (total_rows - 1)) * (track_rows - 1))
+                scrollbar_char = "█" if vis_i == thumb_row else "│"
+                row_items.append(scrollbar_char)
+
+            table.add_row(*row_items)
+
+        # Panel with instructions
+        subtitle = "[dim]↑/↓: Navigate | Enter: Load | Esc: Close | Ctrl+]: Toggle[/dim]"
+        if show_scrollbar:
+            subtitle += f"  [dim]| {start + 1}-{end} of {total_rows}[/dim]"
+
         panel = Panel(
             table,
             title="[bold cyan]Chat History[/bold cyan]",
-            subtitle="[dim]↑/↓: Navigate | Enter: Load | Esc: Close | Ctrl+]: Toggle[/dim]",
+            subtitle=subtitle,
             border_style="cyan",
             padding=(1, 2)
         )
-        
+
         self.console.print(panel)
     
     def move_up(self) -> None:
         """Move selection up."""
         if self.sessions and self.selected_index > 0:
             self.selected_index -= 1
+            # Ensure selection stays within viewport
+            if self.selected_index < self.scroll_offset:
+                self.scroll_offset = max(0, self.scroll_offset - 1)
     
     def move_down(self) -> None:
         """Move selection down."""
         if self.sessions and self.selected_index < len(self.sessions) - 1:
             self.selected_index += 1
+            # Ensure selection stays within viewport
+            term_height = max(10, self.console.size.height)
+            max_visible_rows = max(3, term_height - 6)
+            if self.selected_index >= self.scroll_offset + max_visible_rows:
+                self.scroll_offset = min(self.scroll_offset + 1, max(0, len(self.sessions) - max_visible_rows))
     
     def get_selected_session(self) -> Optional[Dict]:
         """Get the currently selected session.
