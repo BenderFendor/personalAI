@@ -224,14 +224,68 @@ The original `chat.py` still works but is now superseded by the modular structur
 
 ## 📦 Dependencies
 
-See `requirements.txt`:
-- `ollama` - Ollama Python client
-- `duckduckgo_search` - Web search
-- `rich` - Terminal formatting
-- `trafilatura` - Content extraction
-- `requests` - HTTP client
-- `beautifulsoup4` - HTML parsing
-- `lxml` - XML/HTML parsing
+See `requirements.txt` for the full list. Core libraries include:
+- `ollama` – Local LLM inference and tool-calling
+- `duckduckgo_search` – Web search API
+- `trafilatura` – Clean article text extraction
+- `rich` – Terminal UI / formatting
+- `requests`, `beautifulsoup4`, `lxml` – HTTP and HTML parsing helpers
+- `langchain-google-genai` – Gemini integration (optional; only needed when `llm_provider` is `gemini`)
+
+### Optional: Gemini Provider
+To use Google Gemini instead of Ollama:
+1. Install extras: `pip install langchain-google-genai`
+2. Set environment variable (or add to `.env`):
+    ```
+    GOOGLE_API_KEY=your_key_here
+    ```
+3. In `config.json` set:
+    ```json
+    {
+      "llm_provider": "gemini",
+      "gemini_model": "gemini-1.5-flash"
+    }
+    ```
+
+If the API key is missing you'll get a clear startup warning.
+
+### Ollama Models
+Ensure you pull local models before use, e.g.:
+```
+ollama pull qwen3
+ollama pull llama3.1
+```
+Then set `"model": "qwen3"` (or whichever you pulled) in `config.json` when `llm_provider` is `ollama`.
+
+## 🛠 Troubleshooting
+
+### Model Not Found (Ollama 404)
+You might see:
+```
+ERROR: model 'gemini-flash-latest' not found (status code: 404)
+```
+This usually means a Gemini model name was placed under the Ollama `model` key.
+
+Fix options:
+1. Use Gemini:
+    - Set `"llm_provider": "gemini"`
+    - Set `"gemini_model": "gemini-1.5-flash"` (or `gemini-1.5-pro`)
+    - Export `GOOGLE_API_KEY`
+2. Stay with Ollama:
+    - Change `"model"` to a local model id (e.g. `qwen3`, `llama3.1`, `mistral`)
+    - Pull it with `ollama pull <model>` if not already present.
+
+### Gemini Errors
+- Missing API key → set `GOOGLE_API_KEY`
+- Ambiguous model id (e.g. `gemini-flash-latest`) → prefer explicit versions like `gemini-1.5-flash` or `gemini-1.5-pro`.
+
+### No Tool Calls With Gemini
+Some model variants may have limited tool support. Ensure you installed `langchain-google-genai` and restarted.
+
+### Context Overflow
+If long sessions approach the context window, use `/clear` or trim earlier messages. Future enhancement: automatic summarization.
+
+---
 
 ## 🤝 Contributing
 

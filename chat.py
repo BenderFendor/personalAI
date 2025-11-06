@@ -4,12 +4,19 @@ from datetime import datetime
 from typing import List, Dict, Any
 import json
 import ollama
+from typing import Optional, List, Dict, Any
 from rich.console import Console
 from rich.markup import escape
 
 from models import Message, ContextUsage
 from config_manager import ConfigManager
 from tools import get_tool_definitions, ToolExecutor
+try:
+    from utils.gemini_provider import GeminiProvider
+    from tools.adapter import LangChainToolAdapter
+except Exception:
+    GeminiProvider = None
+    LangChainToolAdapter = None
 from utils import ContextCalculator, ChatLogger, DisplayHelper
 
 
@@ -32,6 +39,8 @@ class ChatBot:
         self.messages: List[Message] = []
         self.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.tools = get_tool_definitions()
+        # Lazy init provider for Gemini when selected
+        self._gemini_provider = None  # type: ignore
         self.url_cache: Dict[str, str] = {}
         
         # Initialize RAG if enabled
@@ -42,6 +51,47 @@ class ChatBot:
         
         # Initialize tool executor (after RAG initialization)
         self.tool_executor = ToolExecutor(self.config.get_all(), self.console, self.web_search_rag)
+
+        # Proactive checks for common misconfigurations
+        self._warn_common_misconfigurations()
+
+    def _warn_common_misconfigurations(self) -> None:
+        """Print helpful hints if config looks inconsistent.
+
+        - If provider is Ollama but `model` looks like a Gemini model, suggest switching provider or model.
+        - If provider is Gemini but no API key, surface an actionable message early.
+        """
+        try:
+            provider = self.config.llm_provider
+            model = self.config.model
+            gemini_model = getattr(self.config, "gemini_model", "")
+
+            if provider == "ollama" and model.lower().startswith("gemini"):
+                self.console.print(
+                    "[yellow]\nWarning: Your provider is set to 'ollama' but the model is '"
+                    + escape(model)
+                    + "', which looks like a Google Gemini model.\n"
+                    "• To use Gemini, set llm_provider to 'gemini' and put the model under 'gemini_model'.\n"
+                    "• Or keep llm_provider 'ollama' and change 'model' to a local model (e.g., 'qwen3', 'llama3.1').\n"
+                    "Edit config.json accordingly.\n[/yellow]"
+                )
+
+            if provider == "gemini":
+                api_key = self.config.gemini_api_key
+                if not api_key:
+                    self.console.print(
+                        "[yellow]\nWarning: llm_provider is 'gemini' but GOOGLE_API_KEY isn't set.\n"
+                        "Set it in your environment or .env file, e.g.:\n"
+                        "  GOOGLE_API_KEY=your_key_here\n[/yellow]"
+                    )
+                # Nudge to correct common model name variants
+                if gemini_model and gemini_model.lower() in {"gemini-flash", "gemini-flash-latest", "gemini"}:
+                    self.console.print(
+                        "[dim]Tip: Prefer explicit Gemini ids like 'gemini-1.5-flash' or 'gemini-1.5-pro'.[/dim]"
+                    )
+        except Exception:
+            # Never block startup due to diagnostics
+            pass
     
     def _get_system_prompt(self) -> str:
         """Generate the system prompt dynamically.
@@ -177,11 +227,13 @@ class ChatBot:
                 iteration += 1
                 self.console.print(f"\n[bold blue]>> Tool Iteration {iteration}[/bold blue]")
                 # Add assistant's tool request
-                ollama_messages.append({
+                assistant_msg: Dict[str, Any] = {
                     'role': 'assistant',
-                    'content': full_response if full_response else '',
-                    'tool_calls': tool_calls
-                })
+                    'content': full_response if full_response else ''
+                }
+                if tool_calls:
+                    assistant_msg['tool_calls'] = tool_calls
+                ollama_messages.append(assistant_msg)
                 
                 # Execute tools
                 for tool_call in tool_calls:
@@ -189,10 +241,12 @@ class ChatBot:
                     if isinstance(tool_call, dict):
                         function_name = tool_call['function']['name']
                         arguments = tool_call['function']['arguments']
+                        tool_call_id = tool_call.get('id')
                     else:
                         # ToolCall object from Ollama
                         function_name = tool_call.function.name
                         arguments = tool_call.function.arguments
+                        tool_call_id = None
                     
                     self.display.show_tool_call(function_name, arguments, iteration)
                     
@@ -203,11 +257,18 @@ class ChatBot:
                     # Auto-fetch URLs from search results if applicable
                     tool_result = self._auto_fetch_urls(function_name, tool_result, user_input)
                     
-                    # Add result to messages
-                    ollama_messages.append({
-                        'role': 'tool',
-                        'content': tool_result
-                    })
+                    # Add result to messages; for Gemini include tool_call_id for proper linkage
+                    if self.config.llm_provider == "gemini" and tool_call_id:
+                        ollama_messages.append({
+                            'role': 'tool',
+                            'content': tool_result,
+                            'tool_call_id': tool_call_id
+                        })
+                    else:
+                        ollama_messages.append({
+                            'role': 'tool',
+                            'content': tool_result
+                        })
                 
                 # Get next response
                 context_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
@@ -235,19 +296,21 @@ class ChatBot:
                 self.console.print(full_response)
             
             # Save assistant message
-            assistant_msg = Message(
+            self.messages.append(Message(
                 role='assistant',
                 content=full_response,
                 thinking=full_thinking if full_thinking else None
-            )
-            self.messages.append(assistant_msg)
+            ))
             
             return full_response
             
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            self.console.print(f"\n[red]ERROR: {escape(error_msg)}[/red]")
-            return error_msg
+            # Provide enriched troubleshooting if this looks like a provider/model issue
+            enriched = self._enrich_error_message(e)
+            self.console.print(f"\n[red]ERROR:[/red] {escape(str(e))}")
+            if enriched:
+                self.console.print(enriched)
+            return f"Error: {str(e)}"
     
     def _stream_response(self, messages: List[Dict[str, Any]]) -> tuple[str, str, list]:
         """Stream response from Ollama.
@@ -258,6 +321,35 @@ class ChatBot:
         Returns:
             Tuple of (thinking_text, response_text, tool_calls)
         """
+        # Provider switch: Gemini or Ollama
+        if self.config.llm_provider == "gemini":
+            if GeminiProvider is None:
+                raise RuntimeError("Gemini provider unavailable; install langchain-google-genai.")
+            if self._gemini_provider is None:
+                self._gemini_provider = GeminiProvider(
+                    model=self.config.gemini_model,
+                    api_key=self.config.gemini_api_key,
+                    temperature=self.config.temperature,
+                    minimal_safety=self.config.gemini_safety_minimal,
+                )
+                if self.config.tools_enabled and LangChainToolAdapter:
+                    adapter = LangChainToolAdapter(self.tool_executor)
+                    lc_tools = adapter.build_tools(self.tools)
+                    self._gemini_provider.bind_tools(lc_tools)
+            # Stream from Gemini
+            full_thinking = ""  # Gemini doesn't provide separate thinking field
+            full_response = ""
+            tool_calls: List[Dict[str, Any]] = []
+            for chunk in self._gemini_provider.stream(messages):  # type: ignore[attr-defined]
+                content_chunk = chunk.get("content")
+                if content_chunk:
+                    if not full_response:
+                        self.console.print("\n[bold green]Assistant (Gemini):[/bold green]")
+                    full_response += content_chunk
+                if chunk.get("tool_calls"):
+                    tool_calls = chunk["tool_calls"]  # overwrite with latest collected calls
+            return full_thinking, full_response, tool_calls
+
         response = ollama.chat(
             model=self.config.model,
             messages=messages,
@@ -318,6 +410,66 @@ class ChatBot:
                         })
         
         return full_thinking, full_response, tool_calls
+
+    def _enrich_error_message(self, err: Exception) -> str:
+        """Return an actionable troubleshooting message for common failures.
+
+        Covers:
+        - Ollama 404 'model not found' with Gemini-like model names.
+        - Gemini provider issues (missing API key or bad model id).
+        """
+        try:
+            msg = str(err).lower()
+            provider = self.config.llm_provider
+            cfg = self.config.get_all()
+            model = cfg.get("model")
+            gemini_model = cfg.get("gemini_model")
+
+            lines: list[str] = []
+
+            # Case 1: Ollama cannot find model
+            if ("model" in msg and "not found" in msg) or ("status code: 404" in msg):
+                if provider == "ollama":
+                    # Detect if user put a Gemini-like id into Ollama 'model'
+                    if model and str(model).lower().startswith("gemini"):
+                        lines.append("[bold]It looks like you're trying to use a Gemini model with the Ollama provider.[/bold]")
+                        lines.append("Fix options:")
+                        lines.append("- Use Gemini: set in config.json → 'llm_provider': 'gemini', and set 'gemini_model': 'gemini-1.5-flash' (or 'gemini-1.5-pro').")
+                        lines.append("  Also set GOOGLE_API_KEY in your environment or .env file.")
+                        lines.append("- Stay on Ollama: change 'model' to a local model id (e.g., 'qwen3', 'llama3.1', 'mistral') and pull it if needed:")
+                        lines.append("  ollama pull qwen3")
+                    else:
+                        lines.append("[bold]Ollama can't find the requested model.[/bold]")
+                        lines.append(f"Requested: '{model}'")
+                        lines.append("Try pulling or switching models. Examples:")
+                        lines.append("- ollama pull qwen3  (then set 'model': 'qwen3')")
+                        lines.append("- ollama pull llama3.1  (then set 'model': 'llama3.1')")
+                else:
+                    lines.append("The backend reported 'model not found', but provider isn't Ollama. Double-check config.json.")
+
+            # Case 2: Gemini provider problems
+            if provider == "gemini":
+                # Missing API key
+                if "api key" in msg or "permission" in msg or "unauthorized" in msg:
+                    lines.append("[bold]Gemini requires GOOGLE_API_KEY.[/bold] Set it in your environment or .env:")
+                    lines.append("GOOGLE_API_KEY=your_key_here")
+                # Common wrong model ids
+                if gemini_model and gemini_model.lower() in {"gemini", "gemini-flash", "gemini-flash-latest"}:
+                    lines.append("Use explicit Gemini ids like 'gemini-1.5-flash' or 'gemini-1.5-pro'.")
+
+            if not lines:
+                return ""
+
+            # Format as a friendly Rich block
+            header = "\n[bold yellow]Troubleshooting tips[/bold yellow]\n"
+            bullet = "\n".join(f" • {escape(line)}" for line in lines)
+            where = (
+                "\n[dim]Edit settings in config.json. Current values: "
+                f"llm_provider='{escape(str(provider))}', model='{escape(str(model))}', gemini_model='{escape(str(gemini_model))}'.[/dim]"
+            )
+            return header + bullet + where
+        except Exception:
+            return ""
     
     def _auto_fetch_urls(self, tool_name: str, tool_result: str, user_query: str) -> str:
         """Automatically fetch and parse URLs from search results.
