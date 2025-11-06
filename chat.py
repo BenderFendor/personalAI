@@ -119,6 +119,21 @@ class ChatBot:
                 "- If web search results are indexed, you can retrieve and use that information too\n"
             )
         
+        provider_note = ""
+        try:
+            if self.config.llm_provider == "gemini":
+                provider_note = (
+                    "\n\nTool use with Gemini:\n"
+                    "- You are bound to a set of tools with named parameters. Prefer calling tools directly when needed.\n"
+                    "- If the runtime does not accept native tool calls, output a fenced JSON block exactly in this format and nothing else on that line:\n"
+                    "```tool_calls\n"
+                    "[{\n  \"name\": \"web_search\", \n  \"arguments\": {\"query\": \"...\", \"iterations\": 1}\n}]\n"
+                    "```\n"
+                    "- Use the exact tool names and argument keys from the schema above.\n"
+                )
+        except Exception:
+            pass
+
         return (
             "You are a helpful AI assistant with access to various tools. "
             f"The current date is {datetime.now().strftime('%Y-%m-%d')}. "
@@ -162,6 +177,7 @@ class ChatBot:
             "- After each search, you'll get results and guidance to refine your next search\n"
             "- Each iteration should build on previous results with more specific queries\n"
             "- Use this for deep research, fact-checking, or gathering comprehensive information"
+            f"{provider_note}"
         )
     
     def save_chat_log(self) -> None:
@@ -348,6 +364,12 @@ class ChatBot:
                     full_response += content_chunk
                 if chunk.get("tool_calls"):
                     tool_calls = chunk["tool_calls"]  # overwrite with latest collected calls
+            # Fallback: if no structured tool_calls emitted, try to parse an explicit tool_calls block from text
+            if not tool_calls and "```tool_calls" in full_response:
+                cleaned, parsed_calls = self._parse_tool_calls_from_text(full_response)
+                if parsed_calls:
+                    full_response = cleaned
+                    tool_calls = parsed_calls
             return full_thinking, full_response, tool_calls
 
         response = ollama.chat(
@@ -410,6 +432,43 @@ class ChatBot:
                         })
         
         return full_thinking, full_response, tool_calls
+
+    def _parse_tool_calls_from_text(self, text: str) -> tuple[str, list]:
+        """Extract tool calls from a fenced code block labeled 'tool_calls'.
+
+        Format expected:
+        ```tool_calls
+        [ { "name": "web_search", "arguments": { ... } }, ... ]
+        ```
+
+        Returns a tuple of (text_without_block, tool_calls_list)
+        where tool_calls_list are dicts shaped like {"function": {"name": str, "arguments": dict}}
+        """
+        try:
+            import re, json
+            pattern = r"```tool_calls\s*(.*?)\s*```"
+            m = re.search(pattern, text, flags=re.DOTALL | re.IGNORECASE)
+            if not m:
+                return text, []
+            block = m.group(1).strip()
+            calls = json.loads(block)
+            parsed = []
+            if isinstance(calls, dict):
+                calls = [calls]
+            if isinstance(calls, list):
+                for idx, c in enumerate(calls, start=1):
+                    name = (c or {}).get("name")
+                    args = (c or {}).get("arguments", {})
+                    if name and isinstance(args, dict):
+                        parsed.append({
+                            "id": f"tc-{idx}",
+                            "function": {"name": name, "arguments": args}
+                        })
+            # Remove the block from the text
+            new_text = re.sub(pattern, "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+            return new_text, parsed
+        except Exception:
+            return text, []
 
     def _enrich_error_message(self, err: Exception) -> str:
         """Return an actionable troubleshooting message for common failures.

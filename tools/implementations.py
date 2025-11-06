@@ -57,10 +57,92 @@ class ToolExecutor:
         
         try:
             func = self._tools[tool_name]
+
+            # Normalize common argument aliases to make models more forgiving
+            if tool_name == 'news_search':
+                arguments = self._normalize_news_search_args(arguments)
+            elif tool_name == 'web_search':
+                arguments = self._normalize_web_search_args(arguments)
+
             result = func(**arguments)
             return result
         except Exception as e:
             return f"Error executing {tool_name}: {str(e)}"
+
+    # -------------------------
+    # Argument normalization
+    # -------------------------
+    def _normalize_news_search_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Map common aliases to the expected news_search signature.
+
+        Expected: keywords: str, region: str = "us-en", safesearch: str = "moderate",
+        timelimit: Optional[str] = None ("d","w","m"), max_results: int = 10
+        """
+        normalized = dict(args) if isinstance(args, dict) else {}
+
+        # Alias 'query' -> 'keywords'
+        if 'keywords' not in normalized and 'query' in normalized:
+            normalized['keywords'] = normalized.pop('query')
+
+        # Date filters to DuckDuckGo 'timelimit'
+        # Accept 'date_filter' or 'date_range'
+        date_val = None
+        for k in ('timelimit', 'date_filter', 'date_range'):
+            if k in normalized:
+                date_val = normalized.get(k)
+                # remove alias keys after reading
+                if k != 'timelimit':
+                    normalized.pop(k, None)
+                break
+        if date_val is not None and 'timelimit' not in normalized:
+            mapping = {
+                'd': 'd', 'day': 'd', 'past_day': 'd', 'last_day': 'd', '1d': 'd',
+                'w': 'w', 'week': 'w', 'past_week': 'w', 'last_week': 'w', '7d': 'w',
+                'm': 'm', 'month': 'm', 'past_month': 'm', 'last_month': 'm', '30d': 'm',
+            }
+            key = str(date_val).strip().lower()
+            normalized['timelimit'] = mapping.get(key, None)
+            if normalized['timelimit'] is None:
+                normalized.pop('timelimit', None)  # leave unset if unknown
+
+        # Safe search aliases
+        for alias in ('safeSearch', 'safe_search'):
+            if alias in normalized and 'safesearch' not in normalized:
+                normalized['safesearch'] = normalized.pop(alias)
+
+        # max results alias
+        for alias in ('maxResults', 'max_results'):
+            if alias in normalized:
+                try:
+                    normalized['max_results'] = int(normalized[alias])
+                except Exception:
+                    pass
+                if alias != 'max_results':
+                    normalized.pop(alias, None)
+                break
+
+        # region alias: accept 'us' and normalize to 'us-en'
+        if 'region' in normalized:
+            val = str(normalized['region']).lower()
+            if val in {'us', 'uk'}:
+                normalized['region'] = f"{val}-en"
+
+        return normalized
+
+    def _normalize_web_search_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Map simple aliases for web_search: 'q'->'query', 'num_iterations'->'iterations'."""
+        normalized = dict(args) if isinstance(args, dict) else {}
+        if 'query' not in normalized and 'q' in normalized:
+            normalized['query'] = normalized.pop('q')
+        if 'iterations' not in normalized and 'num_iterations' in normalized:
+            normalized['iterations'] = normalized.pop('num_iterations')
+        # Clamp iterations if provided as string
+        if 'iterations' in normalized:
+            try:
+                normalized['iterations'] = int(normalized['iterations'])
+            except Exception:
+                normalized['iterations'] = 1
+        return normalized
     
     def web_search(self, query: str, iterations: int = 1) -> str:
         """Execute web search with optional iterations.

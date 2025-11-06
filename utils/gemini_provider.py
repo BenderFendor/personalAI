@@ -40,18 +40,22 @@ class GeminiProvider:
                 ]
             }
 
+        # Normalize model name: strip "models/" prefix if present
+        normalized_model = model.replace("models/", "") if model.startswith("models/") else model
+        
         # Some environments might not accept "-latest" variants; prefer a fallback list
-        preferred_models = [model,"gemini-flash-latest", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro"]
+        # Priority: requested model, gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash-exp, gemini-1.5-pro
+        preferred_models = [normalized_model, "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"]
         last_err = None
         self.llm = None
         for mid in preferred_models:
             try:
                 self.llm = ChatGoogleGenerativeAI(
                     model=mid,
-            temperature=temperature,
-            api_key=api_key,
-            safety_settings=safety_settings,
-            streaming=True,
+                    temperature=temperature,
+                    api_key=api_key,
+                    safety_settings=safety_settings,
+                    streaming=True,
                 )
                 break
             except Exception as e:  # lazy fallback on model id errors
