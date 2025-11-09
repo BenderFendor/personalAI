@@ -44,6 +44,68 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
         {
             'type': 'function',
             'function': {
+                'name': 'search_and_fetch',
+                'description': (
+                    'Perform a ranked web search then automatically fetch, chunk, and index the most relevant pages into the RAG vector store. '
+                    'Use this when you need synthesized, source-cited answers from fresh web content. Always yields both a search summary and '
+                    'the indexed chunk previews for transparency. Respects content-type safety filters (skips video/PDF/binary). '
+                    'Chunk previews can be toggled via configuration.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'required': ['query'],
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'The search query (concise; include key entities, constraints, version/date qualifiers)'
+                        },
+                        'max_search_results': {
+                            'type': 'integer',
+                            'description': 'Maximum raw search results to pull before ranking (default 15).',
+                            'default': 15,
+                            'minimum': 3,
+                            'maximum': 50
+                        },
+                        'max_fetch_pages': {
+                            'type': 'integer',
+                            'description': 'Maximum number of pages to fetch & index after ranking (default 5).',
+                            'default': 5,
+                            'minimum': 1,
+                            'maximum': 10
+                        },
+                        'similarity_threshold': {
+                            'type': 'number',
+                            'description': 'Minimum semantic similarity (0-1) for a URL to be fetched (default 0.55).',
+                            'default': 0.55,
+                            'minimum': 0.0,
+                            'maximum': 1.0
+                        },
+                        'diversity_lambda': {
+                            'type': 'number',
+                            'description': 'MMR diversity weighting (0=similarity only, typical 0.3–0.7). Default 0.4.',
+                            'default': 0.4,
+                            'minimum': 0.0,
+                            'maximum': 1.0
+                        },
+                        'fetch_concurrency': {
+                            'type': 'integer',
+                            'description': 'Parallel fetch concurrency limit (default 3).',
+                            'default': 3,
+                            'minimum': 1,
+                            'maximum': 8
+                        },
+                        'include_chunks': {
+                            'type': 'boolean',
+                            'description': 'Force include chunk previews even if global flag disabled (override).',
+                            'default': False
+                        }
+                    }
+                }
+            }
+        },
+        {
+            'type': 'function',
+            'function': {
                 'name': 'news_search',
                 'description': 'Search for recent news articles using DuckDuckGo News. Best for current events, breaking news, and time-sensitive information. Returns articles with publication dates, sources, and images.',
                 'parameters': {

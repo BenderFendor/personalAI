@@ -108,6 +108,12 @@ class ChatCLI:
             status = "enabled" if enabled else "disabled"
             self.console.print(f"[green]Markdown rendering {status}[/green]")
         
+        elif command == '/toggle-chunk-previews':
+            enabled = self.chatbot.config.toggle('show_chunk_previews')
+            self.chatbot.config.save()
+            status = "shown" if enabled else "hidden"
+            self.console.print(f"[green]Chunk previews will be {status} during indexing[/green]")
+        
         elif command == '/help':
             self.display.display_help()
         
@@ -130,6 +136,9 @@ class ChatCLI:
         
         elif command == '/rag-rebuild':
             self._rag_rebuild()
+
+        elif command == '/rag-hard-delete':
+            self._rag_hard_delete()
         
         else:
             self.console.print("[red]Unknown command. Type /help for available commands.[/red]")
@@ -301,3 +310,15 @@ class ChatCLI:
             self.console.print(f"[green]Rebuilt index with {count} documents![/green]")
         except Exception as e:
             self.console.print(f"[red]Error rebuilding index: {escape(str(e))}[/red]")
+
+    def _rag_hard_delete(self) -> None:
+        """Hard delete the RAG collection (drop & recreate)."""
+        try:
+            confirm = self.console.input("[yellow]This will DROP and recreate the vector collection. Type 'DELETE' to confirm: [/yellow]")
+            if confirm.strip().upper() == 'DELETE':
+                self.chatbot.rag_hard_delete()
+                self.console.print("[green]RAG collection dropped & recreated (empty).[/green]")
+            else:
+                self.console.print("[dim]Cancelled.[/dim]")
+        except Exception as e:
+            self.console.print(f"[red]Error performing hard delete: {escape(str(e))}[/red]")

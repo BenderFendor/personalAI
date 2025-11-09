@@ -646,12 +646,16 @@ class ChatBot:
                 chunk_size = self.config.get('chunk_size', 500)
                 chunk_overlap = self.config.get('chunk_overlap', 100)
                 auto_index = self.config.get('web_search_auto_index', True)
+                show_chunk_previews = self.config.get('show_chunk_previews', True)
                 
+                # Provide preview_printer callback to write chunk previews using console
                 self.web_search_rag = WebSearchRAG(
                     self.rag_retriever,
                     chunk_size=chunk_size,
                     chunk_overlap=chunk_overlap,
-                    auto_index=auto_index
+                    auto_index=auto_index,
+                    show_chunk_previews=show_chunk_previews,
+                    preview_printer=lambda text: self.console.print(text)
                 )
             
             self.console.print("[dim]RAG system initialized[/dim]")
@@ -729,6 +733,12 @@ class ChatBot:
         if not self.rag_retriever:
             raise RuntimeError("RAG system not initialized")
         
+        self.rag_retriever.store.reset()
+
+    def rag_hard_delete(self) -> None:
+        """Hard delete the RAG collection (drop & recreate)."""
+        if not self.rag_retriever:
+            raise RuntimeError("RAG system not initialized")
         self.rag_retriever.store.reset()
     
     def rag_rebuild(self) -> int:

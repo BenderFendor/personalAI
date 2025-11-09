@@ -8,7 +8,7 @@ This module provides a helper that:
 
 This enables using web search results as dynamic knowledge base entries.
 """
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 import logging
 
 try:
@@ -40,7 +40,9 @@ class WebSearchRAG:
         retriever: RAGRetriever,
         chunk_size: int = 500,
         chunk_overlap: int = 100,
-        auto_index: bool = True
+        auto_index: bool = True,
+        show_chunk_previews: bool = True,
+        preview_printer: Optional[Callable[[str], None]] = None,
     ):
         """Initialize web search RAG integration.
         
@@ -54,6 +56,8 @@ class WebSearchRAG:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.auto_index = auto_index
+        self.show_chunk_previews = show_chunk_previews
+        self.preview_printer = preview_printer
 
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be less than chunk_size to avoid infinite loop in chunking.")
@@ -121,13 +125,21 @@ class WebSearchRAG:
             # Create metadata for each chunk
             for i, chunk in enumerate(chunks):
                 all_texts.append(chunk)
-                all_metadatas.append({
+                meta = {
                     'source': url,
                     'title': title,
                     'chunk_index': i,
                     'total_chunks': len(chunks),
                     'type': 'web_search'
-                })
+                }
+                all_metadatas.append(meta)
+
+                # Optional chunk preview to console
+                if self.show_chunk_previews and self.preview_printer:
+                    preview = chunks[i][:200].replace('\n', ' ')
+                    self.preview_printer(
+                        f"[dim]Chunk {i+1}/{len(chunks)} from {title} ({url}): {preview}{'...' if len(chunks[i])>200 else ''}[/dim]"
+                    )
         
         if not all_texts:
             logger.warning("No text content to index from search results")

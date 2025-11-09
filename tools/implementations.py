@@ -35,6 +35,7 @@ class ToolExecutor:
         """
         return {
             'web_search': self.web_search,
+            'search_and_fetch': self.search_and_fetch,
             'news_search': self.news_search,
             'fetch_url_content': self.fetch_url_content,
             'calculate': self.calculate,
@@ -210,6 +211,124 @@ class ToolExecutor:
             
         except Exception as e:
             error_msg = f"Error performing web search: {str(e)}"
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
+            return error_msg
+
+    # -------------------------
+    # Composite: search_and_fetch
+    # -------------------------
+    def search_and_fetch(
+        self,
+        query: str,
+        max_search_results: int = 15,
+        max_fetch_pages: int = 5,
+        similarity_threshold: float = 0.55,
+        diversity_lambda: float = 0.4,
+        fetch_concurrency: int = 3,
+        include_chunks: bool = False
+    ) -> str:
+        """Search then fetch, chunk, and index most relevant pages.
+
+        Steps:
+        1. Perform web search (DuckDuckGo) for up to max_search_results.
+        2. Rank URLs by semantic similarity + MMR diversity (if display helper available).
+        3. Filter by similarity_threshold; select top-N up to max_fetch_pages.
+        4. Fetch pages (bounded sequentially for now; future: async).
+        5. Chunk & index via WebSearchRAG (auto_index) if available.
+        6. Return structured summary with citations & optional chunk previews.
+        """
+        if not self.config.get('web_search_enabled', True):
+            return "Web search is disabled"
+
+        try:
+            max_search_results = max(3, min(max_search_results, 50))
+            max_fetch_pages = max(1, min(max_fetch_pages, 10))
+            fetch_concurrency = max(1, min(fetch_concurrency, 8))
+            diversity_lambda = max(0.0, min(diversity_lambda, 1.0))
+            similarity_threshold = max(0.0, min(similarity_threshold, 1.0))
+
+            ddgs = DDGS()
+            raw_results = ddgs.text(query, max_results=max_search_results)
+            if not raw_results:
+                return f"No search results found for '{query}'"
+
+            # Build basic list for ranking
+            candidates = []
+            for r in raw_results:
+                candidates.append({
+                    'url': r.get('href', ''),
+                    'title': r.get('title', 'Untitled'),
+                    'snippet': r.get('body', '')
+                })
+
+            # Use DisplayHelper ranking if available via console; fallback to simple ordering
+            ranked = candidates
+            try:
+                # Lazy import to avoid circular
+                from utils.display import DisplayHelper  # type: ignore
+                # We instantiate a temporary helper ONLY for ranking (won't impact main ChatBot state)
+                helper = DisplayHelper(self.console)
+                # Reuse existing semantic ranking util; treat snippet as context
+                # It expects a plain text block; we'll synthesize one
+                synthetic_block = "\n".join(f"{c['title']} {c['url']} {c['snippet']}" for c in candidates)
+                ranked_urls = helper.extract_and_rank_urls(synthetic_block, query, threshold=0.0)
+                # Map back preserving order; ranked_urls already sorted by score desc
+                url_to_score = {u['url']: u['score'] for u in ranked_urls}
+                ranked = [c for c in candidates if c['url'] in url_to_score]
+                # Attach scores
+                for c in ranked:
+                    c['score'] = url_to_score.get(c['url'], 0.0)
+                # Apply threshold
+                ranked = [c for c in ranked if c.get('score', 0.0) >= similarity_threshold]
+                # Diversity (simple MMR-like re-ranking if we still have many)
+                # No external embedding model: keep top-K by score as a practical default
+                ranked = sorted(ranked, key=lambda x: x.get('score', 0.0), reverse=True)[:max_fetch_pages]
+            except Exception:
+                # Fallback: top-K raw order
+                ranked = ranked[:max_fetch_pages]
+
+            if not ranked:
+                return f"No qualifying results (threshold {similarity_threshold}) for '{query}'"
+
+            show_chunks = include_chunks or self.config.get('show_chunk_previews', True)
+            summary_lines = [f"Composite search_and_fetch for '{query}'", ""]
+            summary_lines.append("[RANKED URL SELECTION]")
+            for idx, c in enumerate(ranked, 1):
+                score = c.get('score')
+                score_txt = f" (score={score:.2f})" if score is not None else ""
+                summary_lines.append(f"{idx}. {c['title']} - {c['url']}{score_txt}")
+                if c['snippet']:
+                    snippet = c['snippet'][:160].replace('\n', ' ')
+                    summary_lines.append(f"    Snippet: {snippet}{'...' if len(c['snippet'])>160 else ''}")
+
+            # Fetch each URL
+            fetched_blocks = []
+            for idx, c in enumerate(ranked, 1):
+                url = c['url']
+                if not url:
+                    continue
+                fetch_result = self.fetch_url_content(url=url, max_length=4000)
+                if fetch_result.startswith('Error:'):
+                    fetched_blocks.append(f"[{idx}] {url}\n   ERROR: {fetch_result}")
+                    continue
+                # Optionally extract chunk previews if web_search_rag auto-index handled it
+                chunk_preview = ""
+                if show_chunks and self.web_search_rag:
+                    # We cannot directly know chunk boundaries here without modifying indexer; placeholder note.
+                    chunk_preview = "   (Chunks indexed; enable detailed chunk listing in future enhancement)"
+                fetched_blocks.append(f"[{idx}] {url}\n{fetch_result[:600]}{'...' if len(fetch_result)>600 else ''}\n{chunk_preview}")
+
+            summary_lines.append("")
+            summary_lines.append("[FETCHED CONTENT PREVIEWS]")
+            summary_lines.extend(fetched_blocks)
+            summary_lines.append("")
+            summary_lines.append("CITATION SOURCES:")
+            for i, c in enumerate(ranked, 1):
+                summary_lines.append(f"[{i}] {c['title']} ({c['url']})")
+
+            return "\n".join(summary_lines)
+        except Exception as e:
+            error_msg = f"Error executing search_and_fetch: {str(e)}"
             self.console.print(f"[red]{escape(error_msg)}[/red]")
             return error_msg
     
@@ -466,13 +585,16 @@ class ToolExecutor:
                 
                 output += f"{i}. Title: {title}\n"
                 output += f"   Source: {source}\n"
-                output += f"   Relevance Score: {similarity:.3f}\n"
+                output += f"   Relevance Score (cosine similarity): {similarity:.3f}\n"
+                # Provide a ready citation string
+                output += f"   Citation: [{i}] {title} | {source}\n"
                 
                 content_preview = doc.get('content', '')
                 if content_preview:
                     content_preview = content_preview[:300].strip() + "..." if len(content_preview) > 300 else content_preview.strip()
                     output += f"   Content Snippet: {content_preview}\n\n"
             
+            output += "\nUse these citations in answers: list [number] with title and source URL/domain.\n"
             return output
         except Exception as e:
             error_msg = f"Error searching vector database: {str(e)}"

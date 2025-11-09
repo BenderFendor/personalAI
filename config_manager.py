@@ -22,6 +22,23 @@ class ConfigManager:
         "auto_fetch_urls": True,
         "auto_fetch_tools": ["news_search", "web_search"],
         "auto_fetch_threshold": 0.6,
+        # RAG / embeddings
+        "rag_enabled": True,
+        "embedding_model": "embeddinggemma:latest",
+        "chroma_db_path": "./chroma_db",
+        "rag_collection": "rag_documents",
+        "rag_top_k": 3,
+        "web_search_rag_enabled": True,
+        "web_search_auto_index": True,
+        "chunk_size": 500,
+        "chunk_overlap": 100,
+        "show_chunk_previews": True,
+        # Composite tool defaults
+        "search_and_fetch_default_max_search_results": 15,
+        "search_and_fetch_default_max_fetch_pages": 5,
+        "search_and_fetch_default_similarity_threshold": 0.55,
+        "search_and_fetch_default_diversity_lambda": 0.4,
+        "search_and_fetch_default_fetch_concurrency": 3,
         # LLM provider settings
         "llm_provider": "ollama",  # "ollama" or "gemini"
         "gemini_model": "gemini-flash-latest",
