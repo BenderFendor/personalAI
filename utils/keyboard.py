@@ -13,6 +13,7 @@ class KeyboardHandler:
     CTRL_TAB = '\t'  # Note: Ctrl+Tab may be captured by terminal
     CTRL_C = '\x03'
     CTRL_D = '\x04'
+    CTRL_B = '\x02'  # Ctrl-b (safer toggle than Ctrl-])
     ESC = '\x1b'
     ENTER = '\r'
     UP = '\x1b[A'
@@ -62,3 +63,15 @@ class KeyboardHandler:
             True if Ctrl+Tab or Ctrl+]
         """
         return key in ['\t', '\x1d']  # Tab or Ctrl+]
+
+    @staticmethod
+    def is_ctrl_toggle(key: str) -> bool:
+        """Check if key is the sidebar toggle (Ctrl-b).
+
+        Args:
+            key: Key code
+
+        Returns:
+            True if Ctrl-b detected.
+        """
+        return key == KeyboardHandler.CTRL_B

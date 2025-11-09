@@ -51,7 +51,14 @@ class OllamaEmbeddingsWrapper:
         # Ollama's python client typically exposes `embeddings` function.
         # We call it and return the `embedding` field.
         resp = ollama.embeddings(model=self.model, prompt=prompt)
-        emb = resp.get("embedding") if isinstance(resp, dict) else None
+        
+        # Handle both dict and object responses
+        if isinstance(resp, dict):
+            emb = resp.get("embedding")
+        else:
+            # Response is likely an object with attributes
+            emb = getattr(resp, "embedding", None)
+        
         if emb is None:
             # try to be resilient to different client shapes
             raise RuntimeError(f"Unexpected response from ollama.embeddings: {resp}")

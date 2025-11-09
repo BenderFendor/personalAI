@@ -17,7 +17,7 @@ try:
 except Exception:
     GeminiProvider = None
     LangChainToolAdapter = None
-from utils import ContextCalculator, ChatLogger, DisplayHelper
+from utils import ContextCalculator, ChatLogger, DisplayHelper, SessionIndex
 
 
 class ChatBot:
@@ -35,13 +35,25 @@ class ChatBot:
         self.context_calc = ContextCalculator(self.config.model)
         self.logger = ChatLogger(logs_dir)
         self.display = DisplayHelper(self.console)
+        self.session_index = SessionIndex("chat_logs/index.json")
         
         self.messages: List[Message] = []
         self.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Track whether the session has any substantive interaction to avoid
+        # writing empty chat logs on exit.
+        self._dirty: bool = False
         self.tools = get_tool_definitions()
+        # Token counters for calibration & index metadata
+        self.total_prompt_tokens: int = 0
+        self.total_eval_tokens: int = 0
         # Lazy init provider for Gemini when selected
         self._gemini_provider = None  # type: ignore
         self.url_cache: Dict[str, str] = {}
+        # Token accounting (populated from Ollama response metadata when available)
+        self.total_prompt_tokens: int = 0
+        self.total_eval_tokens: int = 0
+        self.last_prompt_eval_count: int = 0
+        self.last_eval_count: int = 0
         
         # Initialize RAG if enabled
         self.rag_retriever = None
@@ -180,17 +192,53 @@ class ChatBot:
             f"{provider_note}"
         )
     
-    def save_chat_log(self) -> None:
+    def save_chat_log(self) -> bool:
         """Save current chat session to file."""
-        self.logger.save_session(
+        # Skip saving if nothing meaningful happened in this session.
+        if not self._dirty:
+            self.console.print("[dim]Nothing to save (no messages sent). Skipping log write.[/dim]")
+            return False
+
+        log_path = self.logger.save_session(
             self.current_session,
             self.messages,
             self.config.get_all()
         )
+        # Update the session index (best effort)
+        try:
+            # Title from the first user message, if any
+            title = ""
+            for m in self.messages:
+                if getattr(m, 'role', '') == 'user' and getattr(m, 'content', '').strip():
+                    title = " ".join(m.content.strip().split()[:8])
+                    break
+            self.session_index.add_session(
+                session_id=self.current_session,
+                file=str(log_path),
+                title=title or f"Session {self.current_session}",
+                tokens_in=self.total_prompt_tokens,
+                tokens_out=self.total_eval_tokens,
+            )
+        except Exception:
+            pass
+        return True
+
+    def start_new_session(self, save_current: bool = True) -> None:
+        """Start a new chat session, optionally saving the current one first.
+
+        Args:
+            save_current: If True, save the current session when it has content.
+        """
+        if save_current:
+            self.save_chat_log()
+        self.messages = []
+        self._dirty = False
+        self.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     def clear_history(self) -> None:
         """Clear chat message history."""
         self.messages = []
+        self._dirty = False
     
     def get_context_usage(self) -> ContextUsage:
         """Get current context window usage.
@@ -219,6 +267,9 @@ class ChatBot:
         # Add user message
         user_msg = Message(role='user', content=user_input)
         self.messages.append(user_msg)
+        # Mark session as having content after first real user input
+        if user_input.strip():
+            self._dirty = True
         
         # Prepare messages for Ollama
         ollama_messages = [{'role': 'system', 'content': self._get_system_prompt()}]
@@ -317,6 +368,9 @@ class ChatBot:
                 content=full_response,
                 thinking=full_thinking if full_thinking else None
             ))
+            # A non-empty assistant message should also mark the session dirty
+            if (full_response and full_response.strip()) or (full_thinking and full_thinking.strip()):
+                self._dirty = True
             
             return full_response
             
@@ -386,6 +440,8 @@ class ChatBot:
         started_thinking = False
         finished_thinking = False
         
+        last_prompt_eval = None
+        last_eval = None
         for chunk in response:
             message = chunk.get('message', {})
             
@@ -430,7 +486,36 @@ class ChatBot:
                                 'arguments': tc.function.arguments
                             }
                         })
+
+            # Capture token usage metadata when present (on final chunk)
+            if 'prompt_eval_count' in chunk or 'eval_count' in chunk:
+                try:
+                    pe = int(chunk.get('prompt_eval_count') or 0)
+                    ec = int(chunk.get('eval_count') or 0)
+                    self.last_prompt_eval_count = pe
+                    self.last_eval_count = ec
+                    # Accumulate totals for the session
+                    self.total_prompt_tokens += pe
+                    self.total_eval_tokens += ec
+                except Exception:
+                    pass
         
+            # Capture token counts from final chunk if present
+            if chunk.get('done') is True:
+                if 'prompt_eval_count' in chunk:
+                    last_prompt_eval = chunk.get('prompt_eval_count')
+                if 'eval_count' in chunk:
+                    last_eval = chunk.get('eval_count')
+
+        # Update rolling totals for session
+        try:
+            if isinstance(last_prompt_eval, int):
+                self.total_prompt_tokens += max(0, last_prompt_eval)
+            if isinstance(last_eval, int):
+                self.total_eval_tokens += max(0, last_eval)
+        except Exception:
+            pass
+
         return full_thinking, full_response, tool_calls
 
     def _parse_tool_calls_from_text(self, text: str) -> tuple[str, list]:

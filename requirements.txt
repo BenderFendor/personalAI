@@ -1,16 +1,28 @@
-ollama
-duckduckgo_search
-rich>=0.4.0
+# Core LLM and tools
+ollama>=0.4.0
+requests>=2.31.0
+
+# Search and web scraping
+duckduckgo_search>=4.0.0
 ddgs>=4.0.0
 trafilatura>=1.6.0
-requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
+
+# Terminal UI
+rich>=13.0.0
+prompt_toolkit>=3.0.43
+
+# RAG and embeddings
 sentence-transformers>=3.0.0
-chromadb>=0.4.0,<0.6.0
-langchain>=1.0.3
-langchain-community>=0.4.1
-langchain-text-splitters>=0.2.0
-langchain-google-genai>=3.0.1
-python-dotenv>=1.0.1
-google-genai>=1.49.0
+chromadb>=0.5.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
+
+# Optional: Gemini provider support
+langchain-google-genai>=2.0.0
+google-genai>=1.0.0
+
+# Environment management
+python-dotenv>=1.0.0

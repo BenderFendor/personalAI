@@ -1,7 +1,7 @@
 /chat
 /chat_logs
 config.json
-chroma.sqlite3
+/chroma_db
 __pycache__
 .venv
 .env

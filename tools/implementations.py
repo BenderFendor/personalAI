@@ -235,7 +235,7 @@ class ToolExecutor:
         3. Filter by similarity_threshold; select top-N up to max_fetch_pages.
         4. Fetch pages (bounded sequentially for now; future: async).
         5. Chunk & index via WebSearchRAG (auto_index) if available.
-        6. Return structured summary with citations & optional chunk previews.
+        6. Return structured summary with citations i.e having the page's name using direct quotes and snippets and exercepts when needed & optional chunk previews.
         """
         if not self.config.get('web_search_enabled', True):
             return "Web search is disabled"
@@ -495,8 +495,7 @@ class ToolExecutor:
                 try:
                     # Extract title from HTML metadata using trafilatura, fallback to cleaned URL segment
                     from trafilatura.metadata import extract_metadata
-                    from trafilatura.htmlprocessing import extract_html_metadata
-                    meta = extract_metadata(extract_html_metadata(downloaded))
+                    meta = extract_metadata(downloaded)
                     title = meta.title if meta and meta.title else None
                     if not title:
                         # Fallback: use domain and first non-empty path segment

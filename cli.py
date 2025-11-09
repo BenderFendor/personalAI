@@ -1,14 +1,25 @@
-"""Command-line interface for the Personal AI Chatbot."""
+"""Command-line interface for the Personal AI Chatbot.
 
-import sys
-import select
+Refactored to use prompt_toolkit for robust input handling with a
+non-deletable 'You:' prompt prefix and global keybindings (Ctrl-b sidebar,
+Ctrl-n new session). Rich remains responsible for all output rendering.
+"""
+
+from __future__ import annotations
+
 from chat import ChatBot
-from utils.keyboard import KeyboardHandler
 from utils.sidebar import ChatSidebar
 from rich.panel import Panel
 from rich.markup import escape
 from rich.markdown import Markdown
 from rich.text import Text
+from prompt_toolkit import PromptSession
+from prompt_toolkit.shortcuts import prompt
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.validation import Validator, ValidationError
+from prompt_toolkit.document import Document
+from typing import Optional
 
 
 class ChatCLI:
@@ -24,7 +35,10 @@ class ChatCLI:
         self.console = chatbot.console
         self.display = chatbot.display
         self.sidebar = ChatSidebar(self.console)
-        self.keyboard = KeyboardHandler()
+        # prompt_toolkit session & key bindings will be created lazily.
+        self._session: Optional[PromptSession] = None
+        self._kb = self._create_key_bindings()
+        self._sidebar_active = False
     
     def run(self) -> None:
         """Run the interactive chat loop."""
@@ -32,28 +46,67 @@ class ChatCLI:
         self.display.display_welcome_banner(self.chatbot.config.get_all())
         self.display.display_help()
         
+        # Interactive loop using prompt_toolkit for protected prefix.
+        prefix = "You: "  # Non-editable prefix
+
+        # Validator ensures the text always starts with prefix; if user somehow deletes it (e.g. paste anomaly) we restore.
+        class PrefixValidator(Validator):
+            def validate(self, document: Document) -> None:  # type: ignore[override]
+                if not document.text.startswith(prefix):
+                    raise ValidationError(message="Prompt prefix missing; will auto-restore.")
+
+        if self._session is None:
+            self._session = PromptSession(
+                message="",  # We'll inject prefix manually below
+                key_bindings=self._kb,
+                validator=PrefixValidator(),
+                validate_while_typing=False,
+            )
+
+        self.console.print("[dim]Press Ctrl-b for sidebar, Ctrl-n for new session, /help for commands.[/dim]")
+
         while True:
             try:
-                user_input = self.console.input("\n[bold blue]You:[/bold blue] ").strip()
-                
-                if not user_input:
+                with patch_stdout():  # Allow Rich printing during input
+                    # Build initial buffer content with prefix if empty or corrupted.
+                    buf = self._session.default_buffer
+                    if not buf.text.startswith(prefix):
+                        buf.text = prefix
+                        buf.cursor_position = len(buf.text)
+
+                    # Read line (user editing after prefix). Backspace across prefix blocked via key binding.
+                    line = self._session.prompt()
+
+                # Normalize and strip prefix
+                if line.startswith(prefix):
+                    user_text = line[len(prefix):].strip()
+                else:
+                    # Fallback: treat entire line as user input
+                    user_text = line.strip()
+
+                if not user_text:
                     continue
-                
-                # Handle commands
-                if user_input.startswith('/'):
-                    if self._handle_command(user_input):
-                        break  # Exit requested
+
+                # Commands start with '/'
+                if user_text.startswith('/'):
+                    if self._handle_command(user_text):
+                        break
                     continue
-                
-                # Process chat message
-                self.chatbot.chat(user_input)
-                
+
+                # Normal chat message
+                self.chatbot.chat(user_text)
+
+                # Reset buffer to prefix for next turn
+                buf.text = prefix
+                buf.cursor_position = len(prefix)
+
             except KeyboardInterrupt:
                 self._exit_chat()
                 break
+            except EOFError:
+                self._exit_chat()
+                break
             except Exception as e:
-                # Avoid markup parsing on arbitrary exception text by escaping and
-                # using the style argument instead of inline markup tags.
                 self.console.print(f"\nUnexpected error: {escape(str(e))}", style="red")
     
     def _handle_command(self, command: str) -> bool:
@@ -70,14 +123,26 @@ class ChatCLI:
             return True
         
         elif command == '/save':
-            self.chatbot.save_chat_log()
-            self.console.print(
-                f"[green]Chat log saved to chat_logs/chat_{self.chatbot.current_session}.md[/green]"
-            )
-        
+            if self.chatbot.save_chat_log():
+                self.console.print(
+                    f"[green]Chat log saved to chat_logs/chat_{self.chatbot.current_session}.md[/green]"
+                )
+            else:
+                self.console.print("[yellow]No log saved (empty session).[/yellow]")
+
         elif command == '/clear':
             self.chatbot.clear_history()
             self.console.print("[green]Chat history cleared![/green]")
+
+        elif command == '/new':
+            # Start a new session (saving current if it has content)
+            wrote = self.chatbot.save_chat_log()
+            self.chatbot.start_new_session(save_current=False)
+            if wrote:
+                self.console.print("[green]Previous session saved. New session started.[/green]")
+            else:
+                self.console.print("[green]New session started (previous was empty).[/green]")
+            self.console.print(f"[dim]Session ID: {self.chatbot.current_session}[/dim]")
         
         elif command == '/config':
             self.display.display_config(self.chatbot.config.get_all())
@@ -118,7 +183,7 @@ class ChatCLI:
             self.display.display_help()
         
         elif command == '/history':
-            self._show_sidebar()
+            self._toggle_sidebar()
         
         elif command == '/rag-status':
             self._rag_status()
@@ -151,42 +216,58 @@ class ChatCLI:
         self.sidebar.render()
         
         # Navigation loop
-        while True:
-            key = self.keyboard.get_key()
-            
-            if not key:
-                break
-            
-            # Handle navigation keys
-            if key == self.keyboard.UP:
-                self.sidebar.move_up()
-                self.console.clear()
-                self.sidebar.render()
-            
-            elif key == self.keyboard.DOWN:
-                self.sidebar.move_down()
-                self.console.clear()
-                self.sidebar.render()
-            
-            elif key == self.keyboard.ENTER:
-                # Load selected session
-                session = self.sidebar.get_selected_session()
-                if session:
-                    self.console.clear()
-                    self._load_session(session)
-                break
-            
-            elif key == self.keyboard.ESC or self.keyboard.is_ctrl_tab(key):
-                # Close sidebar
-                self.console.clear()
-                break
-            
-            elif key == self.keyboard.CTRL_C:
-                self.console.clear()
-                break
-        
-        # Redisplay the interface
-        self.console.print("\n[dim]Press Ctrl+] to open chat history[/dim]")
+        # Sidebar now modal; user exits with Ctrl-b or Esc handled in key bindings.
+        self.console.print("[dim]Press Ctrl-b or Esc to return to chat.[/dim]")
+
+    def _toggle_sidebar(self) -> None:
+        if not self._sidebar_active:
+            self._sidebar_active = True
+            self._show_sidebar()
+        else:
+            self._sidebar_active = False
+            self.console.clear()
+            self.console.print("[dim]Sidebar closed.[/dim]")
+            self.console.print("[dim]Press Ctrl-b for sidebar, Ctrl-n for new session, /help for commands.[/dim]")
+
+    def _create_key_bindings(self) -> KeyBindings:
+        kb = KeyBindings()
+
+        @kb.add('c-b')
+        def _(event):  # type: ignore
+            # Toggle sidebar without losing current buffer content
+            self._toggle_sidebar()
+            # If closing, ensure buffer has prefix
+            buf = self._session.default_buffer if self._session else None
+            if buf and not buf.text.startswith('You: '):
+                buf.text = 'You: '
+                buf.cursor_position = len(buf.text)
+
+        @kb.add('c-n')
+        def _(event):  # type: ignore
+            # Start new session (save current if dirty)
+            wrote = self.chatbot.save_chat_log()
+            self.chatbot.start_new_session(save_current=False)
+            self.console.print(
+                "[green]New session started." + (
+                    " Previous saved." if wrote else " Previous was empty."),
+            )
+            self.console.print(f"[dim]Session ID: {self.chatbot.current_session}[/dim]")
+            buf = self._session.default_buffer if self._session else None
+            if buf:
+                buf.text = 'You: '
+                buf.cursor_position = len(buf.text)
+
+        # Prevent backspacing into prefix: if cursor at or before len(prefix) block deletion
+        @kb.add('backspace')
+        def _(event):  # type: ignore
+            buf = event.current_buffer
+            prefix_len = len('You: ')
+            if buf.cursor_position <= prefix_len:
+                event.app.bell()
+            else:
+                buf.delete_before_cursor(1)
+
+        return kb
     
     def _load_session(self, session: dict) -> None:
         """Load a previous chat session.
@@ -254,7 +335,7 @@ class ChatCLI:
 
     def _exit_chat(self) -> None:
         """Exit chat and save log."""
-        self.console.print("\n[yellow]Saving chat log...[/yellow]")
+        self.console.print("\n[yellow]Ending session...[/yellow]")
         self.chatbot.save_chat_log()
         self.console.print("[green]Goodbye![/green]")
     

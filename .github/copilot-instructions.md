@@ -1,5 +1,8 @@
 # GitHub Copilot Instructions for PersonalAI
 
+use .venv for the virtual environment
+use uv for pip installing.
+
 ## Project Overview
 Personal AI Chatbot is a **modular RAG-powered CLI chatbot** using Ollama for LLM inference, with web search, tool calling, and vector-based retrieval. The architecture follows SOLID principles with clear separation between core logic, tools, RAG, and utilities.
 

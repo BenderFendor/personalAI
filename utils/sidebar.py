@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
+import json
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -29,37 +30,63 @@ class ChatSidebar:
         self.sessions: List[Dict] = []
     
     def load_sessions(self) -> None:
-        """Load all available chat sessions from disk."""
+        """Load sessions using index.json if present; fallback to scanning files."""
         if not self.chat_logs_dir.exists():
             self.sessions = []
             return
-        
-        sessions = []
-        for log_file in sorted(self.chat_logs_dir.glob("chat_*.md"), reverse=True):
-            # Parse filename: chat_YYYYMMDD_HHMMSS.md
-            filename = log_file.name
+
+        index_file = self.chat_logs_dir / "index.json"
+        sessions: List[Dict] = []
+
+        if index_file.exists():
             try:
-                session_id = filename.replace("chat_", "").replace(".md", "")
-                date_str = session_id.split("_")[0]
-                time_str = session_id.split("_")[1]
-                
-                # Parse date and time
-                dt = datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
-                
-                # Read first few lines to get a preview
-                preview = self._get_session_preview(log_file)
-                
-                sessions.append({
-                    'id': session_id,
-                    'filename': filename,
-                    'path': str(log_file),
-                    'datetime': dt,
-                    'preview': preview
-                })
-            except Exception as e:
-                # Skip malformed files
-                continue
-        
+                data = json.loads(index_file.read_text(encoding='utf-8'))
+                for entry in data.get('sessions', [])[:500]:
+                    sid = entry.get('id', '')
+                    file_path = entry.get('file') or f"chat_{sid}.md"
+                    p = Path(file_path)
+                    if not p.is_absolute():
+                        p = self.chat_logs_dir / p.name
+                    if not p.exists():
+                        continue
+                    # Reconstruct datetime from id if possible
+                    try:
+                        parts = sid.split('_')
+                        dt = datetime.strptime(f"{parts[0]}_{parts[1]}", "%Y%m%d_%H%M%S") if len(parts) >= 2 else datetime.now()
+                    except Exception:
+                        dt = datetime.now()
+                    title = entry.get('title', p.name)
+                    preview = title[:60] + ("..." if len(title) > 60 else "")
+                    sessions.append({
+                        'id': sid,
+                        'filename': p.name,
+                        'path': str(p),
+                        'datetime': dt,
+                        'preview': preview
+                    })
+            except Exception:
+                # Fall back to file scan if index corrupted
+                pass
+
+        if not sessions:
+            # Fallback scan
+            for log_file in sorted(self.chat_logs_dir.glob("chat_*.md"), reverse=True):
+                filename = log_file.name
+                try:
+                    session_id = filename.replace("chat_", "").replace(".md", "")
+                    parts = session_id.split('_')
+                    dt = datetime.strptime(f"{parts[0]}_{parts[1]}", "%Y%m%d_%H%M%S") if len(parts) >= 2 else datetime.now()
+                    preview = self._get_session_preview(log_file)
+                    sessions.append({
+                        'id': session_id,
+                        'filename': filename,
+                        'path': str(log_file),
+                        'datetime': dt,
+                        'preview': preview
+                    })
+                except Exception:
+                    continue
+
         self.sessions = sessions
         self.selected_index = min(self.selected_index, len(self.sessions) - 1)
     
@@ -165,7 +192,7 @@ class ChatSidebar:
             table.add_row(*row_items)
 
         # Panel with instructions
-        subtitle = "[dim]↑/↓: Navigate | Enter: Load | Esc: Close | Ctrl+]: Toggle[/dim]"
+        subtitle = "[dim]↑/↓: Navigate | Enter: Load | Esc: Close | Ctrl+b: Toggle[/dim]"
         if show_scrollbar:
             subtitle += f"  [dim]| {start + 1}-{end} of {total_rows}[/dim]"
 
@@ -211,7 +238,7 @@ class ChatSidebar:
         """Display sidebar help text."""
         help_text = Text()
         help_text.append("Keyboard Shortcuts:\n\n", style="bold cyan")
-        help_text.append("  Ctrl+]      ", style="bold yellow")
+        help_text.append("  Ctrl+b      ", style="bold yellow")
         help_text.append("Toggle chat history sidebar\n")
         help_text.append("  ↑/↓         ", style="bold yellow")
         help_text.append("Navigate through sessions\n")
