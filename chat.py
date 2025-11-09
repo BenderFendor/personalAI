@@ -30,7 +30,7 @@ class ChatBot:
             config_path: Path to configuration file
             logs_dir: Directory for chat logs
         """
-        self.console = Console()
+        self.console = Console(force_terminal=True, force_interactive=True)
         self.config = ConfigManager(config_path)
         self.context_calc = ContextCalculator(self.config.model)
         self.logger = ChatLogger(logs_dir)
