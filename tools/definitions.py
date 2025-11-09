@@ -107,7 +107,11 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
             'type': 'function',
             'function': {
                 'name': 'news_search',
-                'description': 'Search for recent news articles using DuckDuckGo News. Best for current events, breaking news, and time-sensitive information. Returns articles with publication dates, sources, and images.',
+                'description': (
+                    'Search for recent news articles using DuckDuckGo News. Best for current events, breaking news, and time-sensitive information. '
+                    'Returns articles with publication dates, sources, and images. When auto_fetch is enabled, automatically fetches, chunks, and indexes '
+                    'the most relevant articles into the RAG vector store using semantic ranking.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'required': ['keywords'],
@@ -138,6 +142,30 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                             'default': 10,
                             'minimum': 1,
                             'maximum': 50
+                        },
+                        'auto_fetch': {
+                            'type': 'boolean',
+                            'description': 'Enable automatic fetching, chunking, and RAG indexing of top-ranked articles. Default is false.',
+                            'default': False
+                        },
+                        'max_fetch_pages': {
+                            'type': 'integer',
+                            'description': 'Maximum number of articles to fetch & index after ranking (only used when auto_fetch=true). Default is 5.',
+                            'default': 5,
+                            'minimum': 1,
+                            'maximum': 10
+                        },
+                        'similarity_threshold': {
+                            'type': 'number',
+                            'description': 'Minimum semantic similarity (0-1) for an article to be fetched (only used when auto_fetch=true). Default is 0.35.',
+                            'default': 0.35,
+                            'minimum': 0.0,
+                            'maximum': 1.0
+                        },
+                        'include_chunks': {
+                            'type': 'boolean',
+                            'description': 'Force include chunk previews even if global flag disabled (only used when auto_fetch=true). Default is false.',
+                            'default': False
                         }
                     }
                 }
@@ -199,7 +227,7 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
             'type': 'function',
             'function': {
                 'name': 'search_vector_db',
-                'description': 'Search the internal vector database (RAG) for relevant indexed documents, files, or web pages. Use this to find information from previously indexed content.',
+                'description': 'Search the internal vector database (RAG) for relevant indexed documents, files, web pages, or news articles. Use this to find information from previously indexed content, including fetched news articles with dates and sources. Results include chunk text and metadata (source, title, date, publisher for news).',
                 'parameters': {
                     'type': 'object',
                     'required': ['query'],

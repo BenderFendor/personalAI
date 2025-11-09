@@ -102,7 +102,8 @@ class WebSearchRAG:
         """Index web search results into the vector store.
         
         Args:
-            search_results: List of dicts with 'url', 'content', 'title' keys
+            search_results: List of dicts with 'url', 'content', 'title' keys, 
+                           and optionally 'date', 'publisher', 'image', etc. for news articles
             collection_prefix: Prefix for document IDs
             
         Returns:
@@ -130,8 +131,17 @@ class WebSearchRAG:
                     'title': title,
                     'chunk_index': i,
                     'total_chunks': len(chunks),
-                    'type': 'web_search'
+                    'type': result.get('type', 'web_search')
                 }
+                
+                # Add optional news-specific metadata
+                if 'date' in result:
+                    meta['date'] = result['date']
+                if 'publisher' in result:
+                    meta['publisher'] = result['publisher']
+                if 'image' in result:
+                    meta['image'] = result['image']
+                
                 all_metadatas.append(meta)
 
                 # Optional chunk preview to console
@@ -162,7 +172,8 @@ class WebSearchRAG:
         self,
         url: str,
         content: str,
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None
     ) -> int:
         """Index a single web page.
         
@@ -170,12 +181,18 @@ class WebSearchRAG:
             url: Page URL
             content: Page content
             title: Optional page title
+            metadata: Optional additional metadata (e.g., date, publisher, image for news articles)
             
         Returns:
             Number of chunks indexed
         """
-        return self.index_search_results([{
+        page_data = {
             'url': url,
             'content': content,
             'title': title or url
-        }])
+        }
+        # Merge additional metadata if provided
+        if metadata:
+            page_data.update(metadata)
+        
+        return self.index_search_results([page_data])

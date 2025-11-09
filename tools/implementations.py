@@ -229,6 +229,22 @@ class ToolExecutor:
     ) -> str:
         """Search then fetch, chunk, and index most relevant pages.
 
+        You are a meticulous and critical analyst. Your task is to provide exhaustive, in-depth answers.
+
+        Start by questioning the user's premise. What assumptions are being made?
+
+        Context: Provide the historical or technical context. if needed
+
+        Define: Start by defining all key terms in the prompt.
+
+        Reason through the logical implications of each alternative.
+
+        Identify any logical fallacies, biases, or unstated factors.
+
+        Use this critical examination to build your final answer from the ground up.
+
+        After this verbose analysis, you will synthesize your findings into a final, nuanced answer.
+
         Steps:
         1. Perform web search (DuckDuckGo) for up to max_search_results.
         2. Rank URLs by semantic similarity + MMR diversity (if display helper available).
@@ -338,7 +354,11 @@ class ToolExecutor:
         region: str = "us-en",
         safesearch: str = "moderate",
         timelimit: Optional[str] = None,
-        max_results: int = 10
+        max_results: int = 10,
+        auto_fetch: bool = False,
+        max_fetch_pages: int = 5,
+        similarity_threshold: float = 0.35,
+        include_chunks: bool = False
     ) -> str:
         """Search for recent news articles.
         
@@ -348,6 +368,10 @@ class ToolExecutor:
             safesearch: Safe search level ("on", "moderate", "off")
             timelimit: Time filter ("d", "w", "m", or None)
             max_results: Maximum number of results (1-50)
+            auto_fetch: Enable automatic fetching, chunking, and RAG indexing
+            max_fetch_pages: Maximum pages to fetch when auto_fetch=True (1-10)
+            similarity_threshold: Minimum similarity for fetching (0.0-1.0)
+            include_chunks: Force include chunk previews
             
         Returns:
             Formatted news search results
@@ -357,6 +381,8 @@ class ToolExecutor:
         
         try:
             max_results = max(1, min(max_results, 50))
+            max_fetch_pages = max(1, min(max_fetch_pages, 10))
+            similarity_threshold = max(0.0, min(similarity_threshold, 1.0))
             
             ddgs = DDGS()
             results = ddgs.news(
@@ -370,31 +396,164 @@ class ToolExecutor:
             if not results:
                 return f"No news articles found for '{keywords}'"
             
-            output = f"News search results for '{keywords}'"
+            # Simple mode (backward compatible)
+            if not auto_fetch:
+                output = f"News search results for '{keywords}'"
+                if timelimit:
+                    time_desc = {"d": "past day", "w": "past week", "m": "past month"}.get(timelimit, "")
+                    output += f" ({time_desc})"
+                output += f" - Found {len(results)} articles:\n\n"
+                
+                for i, article in enumerate(results, 1):
+                    output += f"{i}. {article.get('title', 'No title')}\n"
+                    output += f"   Source: {article.get('source', 'Unknown source')}\n"
+                    output += f"   Date: {article.get('date', 'Unknown date')}\n"
+                    output += f"   URL: {article.get('url', 'No URL')}\n"
+                    
+                    body = article.get('body', '')
+                    if body:
+                        body_preview = body[:300] + "..." if len(body) > 300 else body
+                        output += f"   Summary: {body_preview}\n"
+                    
+                    if article.get('image'):
+                        output += f"   Image: {article['image']}\n"
+                    
+                    output += "\n"
+                
+                output += "\n[TIP] Use fetch_url_content(url='...') to read the full article text from any URL above.\n"
+                output += "[TIP] Or use auto_fetch=true to automatically fetch and index top articles.\n"
+                
+                return output
+            
+            # Auto-fetch mode: semantic ranking + fetching + RAG indexing
+            # Build candidates for ranking
+            candidates = []
+            for article in results:
+                candidates.append({
+                    'url': article.get('url', ''),
+                    'title': article.get('title', 'No title'),
+                    'snippet': article.get('body', ''),
+                    'source': article.get('source', 'Unknown source'),
+                    'date': article.get('date', 'Unknown date'),
+                    'image': article.get('image', '')
+                })
+            
+            # Semantic ranking
+            ranked = candidates
+            ranking_succeeded = False
+            try:
+                from utils.display import DisplayHelper
+                helper = DisplayHelper(self.console)
+                # Create synthetic block for ranking
+                synthetic_block = "\n".join(
+                    f"{c['title']} {c['url']} {c['snippet']}" for c in candidates
+                )
+                ranked_urls = helper.extract_and_rank_urls(
+                    synthetic_block, keywords, threshold=0.0
+                )
+                
+                if ranked_urls:
+                    # Map scores back
+                    url_to_score = {u['url']: u['score'] for u in ranked_urls}
+                    ranked = [c for c in candidates if c['url'] in url_to_score]
+                    for c in ranked:
+                        c['score'] = url_to_score.get(c['url'], 0.0)
+                    
+                    # Apply threshold and sort
+                    ranked = [c for c in ranked if c.get('score', 0.0) >= similarity_threshold]
+                    ranked = sorted(ranked, key=lambda x: x.get('score', 0.0), reverse=True)[:max_fetch_pages]
+                    ranking_succeeded = True
+                    
+                    # Debug output
+                    self.console.print(f"[dim]Semantic ranking: {len(ranked)} articles above threshold {similarity_threshold}[/dim]")
+            except Exception as e:
+                self.console.print(f"[dim yellow]Warning: Semantic ranking failed ({str(e)[:50]}), using raw order[/dim yellow]")
+            
+            # Fallback: use raw order if ranking failed or no results above threshold
+            if not ranked:
+                if ranking_succeeded:
+                    self.console.print(f"[dim yellow]No articles above threshold {similarity_threshold}, using top {max_fetch_pages} by raw order[/dim yellow]")
+                ranked = candidates[:max_fetch_pages]
+                # Mark as raw order (no score)
+                for c in ranked:
+                    c['score'] = None
+            
+            # Build output
+            show_chunks = include_chunks or self.config.get('show_chunk_previews', True)
+            summary_lines = [f"News search with auto-fetch for '{keywords}'"]
             if timelimit:
                 time_desc = {"d": "past day", "w": "past week", "m": "past month"}.get(timelimit, "")
-                output += f" ({time_desc})"
-            output += f" - Found {len(results)} articles:\n\n"
+                summary_lines[0] += f" ({time_desc})"
+            summary_lines.append("")
+            summary_lines.append("[RANKED NEWS ARTICLES]")
             
-            for i, article in enumerate(results, 1):
-                output += f"{i}. {article.get('title', 'No title')}\n"
-                output += f"   Source: {article.get('source', 'Unknown source')}\n"
-                output += f"   Date: {article.get('date', 'Unknown date')}\n"
-                output += f"   URL: {article.get('url', 'No URL')}\n"
-                
-                body = article.get('body', '')
-                if body:
-                    body_preview = body[:300] + "..." if len(body) > 300 else body
-                    output += f"   Summary: {body_preview}\n"
-                
-                if article.get('image'):
-                    output += f"   Image: {article['image']}\n"
-                
-                output += "\n"
+            for idx, c in enumerate(ranked, 1):
+                score = c.get('score')
+                score_txt = f" (score={score:.2f})" if score is not None else ""
+                summary_lines.append(f"{idx}. {c['title']}{score_txt}")
+                summary_lines.append(f"    Source: {c['source']} | Date: {c['date']}")
+                summary_lines.append(f"    URL: {c['url']}")
+                if c['snippet']:
+                    snippet = c['snippet'][:200].replace('\n', ' ')
+                    summary_lines.append(f"    Summary: {snippet}{'...' if len(c['snippet'])>200 else ''}")
+                summary_lines.append("")
             
-            output += "\n[TIP] Use fetch_url_content(url='...') to read the full article text from any URL above.\n"
+            # Fetch articles
+            # TODO: Add async fetching with asyncio + aiohttp for parallel concurrency
+            # (see search_and_fetch pattern - use fetch_concurrency parameter)
+            fetched_blocks = []
+            for idx, c in enumerate(ranked, 1):
+                url = c['url']
+                if not url:
+                    continue
+                
+                self.console.print(f"[dim]Fetching article {idx}/{len(ranked)}: {c['title'][:50]}...[/dim]")
+                # Fetch full content for RAG indexing (max allowed: 20000 chars)
+                fetch_result = self.fetch_url_content(url=url, max_length=20000)
+                
+                if fetch_result.startswith('Error:'):
+                    fetched_blocks.append(f"[{idx}] {c['title']} - {url}\n   ERROR: {fetch_result}")
+                    continue
+                
+                # Index with news metadata
+                if self.web_search_rag and self.config.get('news_search_auto_index', True):
+                    try:
+                        news_metadata = {
+                            'date': c['date'],
+                            'publisher': c['source'],
+                            'type': 'news_search'
+                        }
+                        if c['image']:
+                            news_metadata['image'] = c['image']
+                        
+                        indexed_count = self.web_search_rag.index_single_page(
+                            url=url,
+                            content=fetch_result,
+                            title=c['title'],
+                            metadata=news_metadata
+                        )
+                        chunk_note = f"   [dim]✓ Indexed {indexed_count} chunks into RAG[/dim]"
+                    except Exception as e:
+                        chunk_note = f"   [dim yellow]Warning: Indexing failed: {str(e)[:50]}[/dim yellow]"
+                else:
+                    chunk_note = ""
+                
+                preview = fetch_result[:600].replace('\n', ' ')
+                fetched_blocks.append(
+                    f"[{idx}] {c['title']} - {c['source']} ({c['date']})\n"
+                    f"    {url}\n"
+                    f"    {preview}{'...' if len(fetch_result)>600 else ''}\n"
+                    f"{chunk_note}"
+                )
             
-            return output
+            summary_lines.append("[FETCHED CONTENT PREVIEWS]")
+            summary_lines.extend(fetched_blocks)
+            summary_lines.append("")
+            summary_lines.append("CITATION SOURCES:")
+            for i, c in enumerate(ranked, 1):
+                summary_lines.append(f"[{i}] {c['title']} - {c['source']} ({c['date']}) [{c['url']}]")
+            
+            return "\n".join(summary_lines)
             
         except Exception as e:
             error_msg = f"Error performing news search: {str(e)}"

@@ -47,7 +47,7 @@ class ChromaVectorStore:
         documents: List[str],
         metadatas: Optional[List[dict]] = None,
     ):
-        """Add a batch of documents to the collection."""
+        """Add or update a batch of documents to the collection."""
         kwargs = {
             "ids": ids,
             "embeddings": embeddings,
@@ -56,7 +56,8 @@ class ChromaVectorStore:
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
 
-        self.collection.add(**kwargs)
+        # Use upsert to avoid duplicate ID warnings
+        self.collection.upsert(**kwargs)
 
     def query(self, query_embeddings: List[List[float]], n_results: int = 5):
         """Query the collection by embedding(s). Returns raw chroma results dict."""
