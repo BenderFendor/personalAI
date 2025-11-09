@@ -49,6 +49,11 @@ class ChatBot:
         # Lazy init provider for Gemini when selected
         self._gemini_provider = None  # type: ignore
         self.url_cache: Dict[str, str] = {}
+        # Context & calibration settings
+        self._last_prompt_eval_count: int | None = None
+        self._warn_threshold: float = 0.85
+        self._truncate_threshold: float = 0.90
+        self._keep_last_turns: int = 6
         # Token accounting (populated from Ollama response metadata when available)
         self.total_prompt_tokens: int = 0
         self.total_eval_tokens: int = 0
@@ -279,6 +284,19 @@ class ChatBot:
         
         # Show context usage
         context_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
+        estimated_before = context_usage.current_tokens
+        # Warn and conditionally condense if approaching/exceeding limits
+        if context_usage.percentage >= self._warn_threshold * 100:
+            self.console.print("[yellow]Approaching context limit. Older turns may be summarized if needed.[/yellow]")
+        if context_usage.percentage >= self._truncate_threshold * 100:
+            self._condense_history()
+            # Rebuild messages after condensation
+            ollama_messages = [{'role': 'system', 'content': self._get_system_prompt()}]
+            for msg in self.messages[:-1]:
+                ollama_messages.append(msg.to_ollama_format())
+            ollama_messages.append({'role': 'user', 'content': user_input})
+            context_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
+            estimated_before = context_usage.current_tokens
         self.console.print(f"\n[dim]{self.display.display_context_bar(context_usage)}[/dim]")
         
         try:
@@ -346,6 +364,15 @@ class ChatBot:
                 response = self._stream_response(ollama_messages)
                 iteration_thinking, full_response, tool_calls = response
                 full_thinking += iteration_thinking
+                # Update calibration if we have actual prompt tokens
+                try:
+                    if isinstance(self._last_prompt_eval_count, int):
+                        # Estimate for this follow-up call based on current composed messages
+                        follow_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
+                        self.context_calc.register_actual(self._last_prompt_eval_count, follow_usage.current_tokens)
+                        self._last_prompt_eval_count = None
+                except Exception:
+                    pass
                 
                 if not tool_calls:
                     self.console.print("\n[bold green]Final Response:[/bold green]")
@@ -372,6 +399,12 @@ class ChatBot:
             if (full_response and full_response.strip()) or (full_thinking and full_thinking.strip()):
                 self._dirty = True
             
+            # Calibrate after first response
+            try:
+                if isinstance(self._last_prompt_eval_count, int):
+                    self.context_calc.register_actual(self._last_prompt_eval_count, estimated_before)
+            finally:
+                self._last_prompt_eval_count = None
             return full_response
             
         except Exception as e:
@@ -507,16 +540,60 @@ class ChatBot:
                 if 'eval_count' in chunk:
                     last_eval = chunk.get('eval_count')
 
-        # Update rolling totals for session
+        # Update rolling totals for session and expose last prompt count for calibration
         try:
             if isinstance(last_prompt_eval, int):
                 self.total_prompt_tokens += max(0, last_prompt_eval)
+                self._last_prompt_eval_count = last_prompt_eval
             if isinstance(last_eval, int):
                 self.total_eval_tokens += max(0, last_eval)
         except Exception:
             pass
 
         return full_thinking, full_response, tool_calls
+
+    def _condense_history(self) -> None:
+        """Summarize older turns into a single system message to reduce token usage.
+
+        Keeps the most recent N turns (user/assistant messages) and replaces
+        the earlier history with a compact summary note.
+        """
+        try:
+            # Remove any existing summary system message from the front first
+            existing_summary_idx = None
+            for i, m in enumerate(self.messages):
+                if m.role == 'system' and m.content.strip().startswith('[Conversation summary'):
+                    existing_summary_idx = i
+                    break
+            base_messages = self.messages[:]
+            if existing_summary_idx is not None:
+                base_messages.pop(existing_summary_idx)
+
+            if len(base_messages) <= self._keep_last_turns:
+                return
+
+            old = base_messages[:-self._keep_last_turns]
+            recent = base_messages[-self._keep_last_turns:]
+
+            lines: list[str] = [f"[Conversation summary up to turn {len(old)}]"]
+            # Build a compact textual summary (naive truncation per turn)
+            for msg in old:
+                role = 'User' if msg.role == 'user' else ('Assistant' if msg.role == 'assistant' else msg.role.title())
+                snippet = (msg.content or '').replace('\n', ' ')
+                if len(snippet) > 240:
+                    snippet = snippet[:240] + '…'
+                lines.append(f"- {role}: {snippet}")
+                if len(lines) > 30:
+                    lines.append("- … (earlier turns summarized)")
+                    break
+            summary_text = "\n".join(lines)
+
+            summary_msg = Message(role='system', content=summary_text)
+            self.messages = [summary_msg] + recent
+            self.console.print("[yellow]Older turns were condensed into a summary to stay within the context window.[/yellow]")
+        except Exception:
+            # Condensation is best-effort; never fail chat flow
+            pass
 
     def _parse_tool_calls_from_text(self, text: str) -> tuple[str, list]:
         """Extract tool calls from a fenced code block labeled 'tool_calls'.

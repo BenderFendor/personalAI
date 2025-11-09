@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from chat import ChatBot
 from utils.sidebar import ChatSidebar
+from utils.keyboard import KeyboardHandler
 from rich.panel import Panel
 from rich.markup import escape
 from rich.markdown import Markdown
@@ -19,6 +20,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.validation import Validator, ValidationError
 from prompt_toolkit.document import Document
+from prompt_toolkit.application import run_in_terminal
 from typing import Optional
 
 
@@ -39,6 +41,8 @@ class ChatCLI:
         self._session: Optional[PromptSession] = None
         self._kb = self._create_key_bindings()
         self._sidebar_active = False
+        # Retain legacy keyboard handler for scrollable log viewer (run in terminal).
+        self.keyboard = KeyboardHandler()
     
     def run(self) -> None:
         """Run the interactive chat loop."""
@@ -212,12 +216,15 @@ class ChatCLI:
     
     def _show_sidebar(self) -> None:
         """Show sidebar with chat history navigation."""
-        self.console.clear()
-        self.sidebar.render()
+        # Render inside run_in_terminal so ANSI output isn't mangled by the prompt.
+        def _render():
+            self.console.clear()
+            self.sidebar.render()
+            self.console.print("[dim]Press Ctrl-b or Esc to return to chat. Use ↑/↓ to navigate, Enter to open.[/dim]")
+        run_in_terminal(_render)
         
         # Navigation loop
-        # Sidebar now modal; user exits with Ctrl-b or Esc handled in key bindings.
-        self.console.print("[dim]Press Ctrl-b or Esc to return to chat.[/dim]")
+        # Sidebar is modal; use key bindings to navigate while active.
 
     def _toggle_sidebar(self) -> None:
         if not self._sidebar_active:
@@ -225,9 +232,11 @@ class ChatCLI:
             self._show_sidebar()
         else:
             self._sidebar_active = False
-            self.console.clear()
-            self.console.print("[dim]Sidebar closed.[/dim]")
-            self.console.print("[dim]Press Ctrl-b for sidebar, Ctrl-n for new session, /help for commands.[/dim]")
+            def _close():
+                self.console.clear()
+                self.console.print("[dim]Sidebar closed.[/dim]")
+                self.console.print("[dim]Press Ctrl-b for sidebar, Ctrl-n for new session, /help for commands.[/dim]")
+            run_in_terminal(_close)
 
     def _create_key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
@@ -247,11 +256,13 @@ class ChatCLI:
             # Start new session (save current if dirty)
             wrote = self.chatbot.save_chat_log()
             self.chatbot.start_new_session(save_current=False)
-            self.console.print(
-                "[green]New session started." + (
-                    " Previous saved." if wrote else " Previous was empty."),
-            )
-            self.console.print(f"[dim]Session ID: {self.chatbot.current_session}[/dim]")
+            def _notify():
+                self.console.print(
+                    "[green]New session started." + (
+                        " Previous saved." if wrote else " Previous was empty."),
+                )
+                self.console.print(f"[dim]Session ID: {self.chatbot.current_session}[/dim]")
+            run_in_terminal(_notify)
             buf = self._session.default_buffer if self._session else None
             if buf:
                 buf.text = 'You: '
@@ -266,6 +277,36 @@ class ChatCLI:
                 event.app.bell()
             else:
                 buf.delete_before_cursor(1)
+
+        # Sidebar navigation keys when active
+        @kb.add('up')
+        def _(event):  # type: ignore
+            if self._sidebar_active:
+                self.sidebar.move_up()
+                run_in_terminal(lambda: (self.console.clear(), self.sidebar.render(), self.console.print("[dim]Press Ctrl-b or Esc to return to chat. Use ↑/↓ to navigate, Enter to open.[/dim]")))
+
+        @kb.add('down')
+        def _(event):  # type: ignore
+            if self._sidebar_active:
+                self.sidebar.move_down()
+                run_in_terminal(lambda: (self.console.clear(), self.sidebar.render(), self.console.print("[dim]Press Ctrl-b or Esc to return to chat. Use ↑/↓ to navigate, Enter to open.[/dim]")))
+
+        @kb.add('enter')
+        def _(event):  # type: ignore
+            if self._sidebar_active:
+                session = self.sidebar.get_selected_session()
+                if session:
+                    # Suspend prompt and show the markdown viewer which uses raw keyboard
+                    run_in_terminal(lambda: self._load_session(session))
+                # Close sidebar either way
+                self._sidebar_active = False
+                run_in_terminal(lambda: (self.console.clear(), self.console.print("[dim]Sidebar closed.[/dim]")))
+
+        @kb.add('escape')
+        def _(event):  # type: ignore
+            if self._sidebar_active:
+                self._sidebar_active = False
+                run_in_terminal(lambda: (self.console.clear(), self.console.print("[dim]Sidebar closed.[/dim]")))
 
         return kb
     
