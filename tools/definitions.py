@@ -246,5 +246,91 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     }
                 }
             }
+        },
+        {
+            'type': 'function',
+            'function': {
+                'name': 'search_wikipedia',
+                'description': (
+                    'Search Wikipedia for encyclopedic, factual information. Returns article summaries with inline URL citations. '
+                    'Best for: definitions, historical facts, biographical information, scientific concepts, geographic data. '
+                    'Handles disambiguation automatically by ranking results semantically. Content is automatically chunked and '
+                    'indexed into RAG vector store for later retrieval. Use this for authoritative reference material, not current events.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'required': ['query'],
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'Search query (e.g., "quantum computing", "Marie Curie", "Python programming language")'
+                        },
+                        'top_k': {
+                            'type': 'integer',
+                            'description': 'Number of Wikipedia articles to retrieve (1-5). Default is 2.',
+                            'default': 2,
+                            'minimum': 1,
+                            'maximum': 5
+                        },
+                        'max_chars': {
+                            'type': 'integer',
+                            'description': 'Maximum characters per article summary for display. Default is 3000.',
+                            'default': 3000,
+                            'minimum': 500,
+                            'maximum': 10000
+                        },
+                        'auto_index': {
+                            'type': 'boolean',
+                            'description': 'Automatically chunk and index full article text into RAG vector store. Default is true.',
+                            'default': True
+                        }
+                    }
+                }
+            }
+        },
+        {
+            'type': 'function',
+            'function': {
+                'name': 'search_arxiv',
+                'description': (
+                    'Search arXiv.org for academic papers and research articles in physics, mathematics, computer science, '
+                    'and related fields. Returns paper metadata (title, authors, abstract, publication date) with inline URL citations. '
+                    'Optionally fetches and parses full PDF content. All content is automatically chunked and indexed into RAG vector store. '
+                    'Best for: academic research, technical papers, algorithm documentation, scientific studies, latest research developments.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'required': ['query'],
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'Search query (e.g., "transformer neural networks", "quantum machine learning", "graph algorithms")'
+                        },
+                        'max_results': {
+                            'type': 'integer',
+                            'description': 'Maximum number of papers to retrieve (1-10). Default is 3.',
+                            'default': 3,
+                            'minimum': 1,
+                            'maximum': 10
+                        },
+                        'get_full_text': {
+                            'type': 'boolean',
+                            'description': 'Download and parse full PDF content (slower, provides complete paper text). Default is false (abstract only).',
+                            'default': False
+                        },
+                        'sort_by': {
+                            'type': 'string',
+                            'description': 'Sort order: "relevance", "lastUpdatedDate", or "submittedDate". Default is "relevance".',
+                            'default': 'relevance',
+                            'enum': ['relevance', 'lastUpdatedDate', 'submittedDate']
+                        },
+                        'auto_index': {
+                            'type': 'boolean',
+                            'description': 'Automatically chunk and index paper content into RAG vector store. Default is true.',
+                            'default': True
+                        }
+                    }
+                }
+            }
         }
     ]

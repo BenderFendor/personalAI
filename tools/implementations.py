@@ -2,14 +2,16 @@
 
 import math
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 import requests
 import trafilatura
 from trafilatura.settings import use_config
 from ddgs import DDGS
 from rich.console import Console
 from rich.markup import escape
-
+import wikipediaapi
+import arxiv
+import fitz  # PyMuPDF
 
 class ToolExecutor:
     """Handles execution of all tool functions."""
@@ -27,7 +29,7 @@ class ToolExecutor:
         self.web_search_rag = web_search_rag
         self._tools = self._register_tools()
     
-    def _register_tools(self) -> Dict[str, callable]:
+    def _register_tools(self) -> Dict[str, Callable[..., str]]:
         """Register all available tool functions.
         
         Returns:
@@ -40,7 +42,9 @@ class ToolExecutor:
             'fetch_url_content': self.fetch_url_content,
             'calculate': self.calculate,
             'get_current_time': self.get_current_time,
-            'search_vector_db': self.search_vector_db
+            'search_vector_db': self.search_vector_db,
+            'search_wikipedia': self.search_wikipedia,
+            'search_arxiv': self.search_arxiv
         }
     
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -756,5 +760,248 @@ class ToolExecutor:
             return output
         except Exception as e:
             error_msg = f"Error searching vector database: {str(e)}"
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
+            return error_msg
+
+    def search_wikipedia(
+        self,
+        query: str,
+        top_k: int = 2,
+        max_chars: int = 3000,
+        auto_index: bool = True
+    ) -> str:
+        """Search Wikipedia for encyclopedic information.
+        
+        Args:
+            query: Search query
+            top_k: Number of articles to retrieve (1-5)
+            max_chars: Maximum characters per article summary
+            auto_index: Whether to index full articles into RAG
+            
+        Returns:
+            Formatted Wikipedia search results with inline URL citations
+        """
+        try:
+            top_k = max(1, min(top_k, 5))
+            max_chars = max(500, min(max_chars, 10000))
+            
+            # Initialize Wikipedia API with user agent
+            wiki = wikipediaapi.Wikipedia(
+                language='en',
+                user_agent='PersonalAI-Chatbot/1.0 (Educational RAG project)'
+            )
+            
+            # Search for pages - wikipediaapi doesn't have direct search, so we use the page method
+            # For better search, we'll try to get the page directly first
+            page = wiki.page(query)
+            
+            results = []
+            if page.exists():
+                results.append(page)
+            else:
+                # If direct match fails, try common variations
+                variations = [
+                    query.title(),  # Title case
+                    query.lower(),   # Lower case
+                    query.upper(),   # Upper case
+                    query.replace(' ', '_')  # Underscores
+                ]
+                for variant in variations:
+                    page = wiki.page(variant)
+                    if page.exists():
+                        results.append(page)
+                        break
+            
+            if not results:
+                return f"No Wikipedia articles found for '{query}'. Try being more specific or using full proper nouns."
+            
+            output_lines = [f"Wikipedia search results for '{escape(query)}':\n"]
+            indexed_chunks = 0
+            
+            for idx, page in enumerate(results[:top_k], 1):
+                # Extract summary
+                summary = page.summary[:max_chars]
+                if len(page.summary) > max_chars:
+                    summary += "..."
+                
+                # Format output with inline citation
+                output_lines.append(f"{idx}. **{escape(page.title)}**")
+                output_lines.append(f"   URL: {page.fullurl}")
+                output_lines.append(f"   Summary: {escape(summary)}\n")
+                
+                # Auto-index full article into RAG if enabled
+                if auto_index and self.web_search_rag and self.web_search_rag.auto_index:
+                    try:
+                        chunks = self.web_search_rag.index_single_page(
+                            url=page.fullurl,
+                            content=page.text,  # Full article text
+                            title=page.title,
+                            metadata={
+                                'source': 'wikipedia',
+                                'type': 'encyclopedia',
+                                'language': 'en',
+                                'url': page.fullurl
+                            }
+                        )
+                        indexed_chunks += chunks
+                        self.console.print(f"[dim]✓ Indexed {chunks} chunks from Wikipedia: {escape(page.title[:50])}[/dim]")
+                    except Exception as e:
+                        self.console.print(f"[dim yellow]⚠ Could not index Wikipedia article: {escape(str(e)[:50])}[/dim yellow]")
+            
+            if indexed_chunks > 0:
+                output_lines.append(f"\n[RAG INDEX] Successfully indexed {indexed_chunks} chunks into vector database")
+                output_lines.append("[TIP] Use search_vector_db to retrieve this content later\n")
+            
+            # Add citation format guidance
+            output_lines.append("\n📚 INLINE CITATIONS:")
+            for idx, page in enumerate(results[:top_k], 1):
+                output_lines.append(f"[{idx}] {page.title} - Wikipedia ({page.fullurl})")
+            
+            output_lines.append("\nWhen answering, cite sources inline like: 'Quantum computing uses qubits [1]...'")
+            
+            return "\n".join(output_lines)
+            
+        except Exception as e:
+            error_msg = f"Error searching Wikipedia: {str(e)}"
+            self.console.print(f"[red]{escape(error_msg)}[/red]")
+            return error_msg
+    
+    def search_arxiv(
+        self,
+        query: str,
+        max_results: int = 3,
+        get_full_text: bool = False,
+        sort_by: str = 'relevance',
+        auto_index: bool = True
+    ) -> str:
+        """Search arXiv for academic papers.
+        
+        Args:
+            query: Search query
+            max_results: Maximum number of papers (1-10)
+            get_full_text: Whether to download and parse full PDFs
+            sort_by: Sort order ('relevance', 'lastUpdatedDate', 'submittedDate')
+            auto_index: Whether to index papers into RAG
+            
+        Returns:
+            Formatted arXiv search results with inline URL citations
+        """
+        try:
+            max_results = max(1, min(max_results, 10))
+            
+            # Map sort parameter
+            sort_map = {
+                'relevance': arxiv.SortCriterion.Relevance,
+                'lastUpdatedDate': arxiv.SortCriterion.LastUpdatedDate,
+                'submittedDate': arxiv.SortCriterion.SubmittedDate
+            }
+            sort_criterion = sort_map.get(sort_by, arxiv.SortCriterion.Relevance)
+            
+            # Search arXiv
+            self.console.print(f"[dim]Searching arXiv for: {escape(query)}...[/dim]")
+            search = arxiv.Search(
+                query=query,
+                max_results=max_results,
+                sort_by=sort_criterion,
+                sort_order=arxiv.SortOrder.Descending
+            )
+            
+            results = list(search.results())
+            
+            if not results:
+                return f"No arXiv papers found for '{query}'"
+            
+            output_lines = [f"arXiv search results for '{escape(query)}':\n"]
+            indexed_chunks = 0
+            
+            for idx, paper in enumerate(results, 1):
+                # Format authors
+                authors = ", ".join([author.name for author in paper.authors[:3]])
+                if len(paper.authors) > 3:
+                    authors += f" et al. ({len(paper.authors)} total)"
+                
+                # Extract content - abstract by default, full PDF if requested
+                content = paper.summary
+                
+                if get_full_text:
+                    self.console.print(f"[dim]📄 Downloading PDF: {escape(paper.title[:50])}...[/dim]")
+                    try:
+                        # Download PDF to temporary location
+                        pdf_path = paper.download_pdf(dirpath="/tmp")
+                        
+                        # Extract text using PyMuPDF
+                        doc = fitz.open(pdf_path)
+                        full_text = ""
+                        for page_num in range(min(len(doc), 20)):  # Limit to first 20 pages
+                            page = doc[page_num]
+                            # Cast to str to satisfy static typing; PyMuPDF returns str for default mode
+                            full_text += str(page.get_text())
+                        doc.close()
+                        
+                        if full_text.strip():
+                            content = full_text
+                            self.console.print(f"[dim]✓ Extracted {len(full_text)} characters from PDF[/dim]")
+                        else:
+                            self.console.print(f"[dim yellow]⚠ PDF extraction yielded no text, using abstract[/dim yellow]")
+                    except Exception as pdf_error:
+                        self.console.print(f"[dim yellow]⚠ PDF download failed: {escape(str(pdf_error)[:50])}, using abstract[/dim yellow]")
+                
+                # Format output with inline citation
+                output_lines.append(f"{idx}. **{escape(paper.title)}**")
+                output_lines.append(f"   Authors: {escape(authors)}")
+                output_lines.append(f"   Published: {paper.published.strftime('%Y-%m-%d')}")
+                output_lines.append(f"   arXiv ID: {paper.entry_id.split('/')[-1]}")
+                output_lines.append(f"   URL: {paper.entry_id}")
+                output_lines.append(f"   PDF: {paper.pdf_url}")
+                output_lines.append(f"   Categories: {', '.join(paper.categories)}")
+                
+                # Show abstract preview (even if we have full text)
+                abstract_preview = paper.summary[:400]
+                if len(paper.summary) > 400:
+                    abstract_preview += "..."
+                output_lines.append(f"   Abstract: {escape(abstract_preview)}\n")
+                
+                # Auto-index into RAG if enabled
+                if auto_index and self.web_search_rag and self.web_search_rag.auto_index:
+                    try:
+                        chunks = self.web_search_rag.index_single_page(
+                            url=paper.entry_id,
+                            content=content,
+                            title=paper.title,
+                            metadata={
+                                'source': 'arxiv',
+                                'type': 'academic_paper',
+                                'authors': authors,
+                                'published': paper.published.strftime('%Y-%m-%d'),
+                                'arxiv_id': paper.entry_id.split('/')[-1],
+                                'categories': ', '.join(paper.categories),
+                                'pdf_url': paper.pdf_url,
+                                'url': paper.entry_id
+                            }
+                        )
+                        indexed_chunks += chunks
+                        self.console.print(f"[dim]✓ Indexed {chunks} chunks from arXiv paper: {escape(paper.title[:50])}[/dim]")
+                    except Exception as e:
+                        self.console.print(f"[dim yellow]⚠ Could not index arXiv paper: {escape(str(e)[:50])}[/dim yellow]")
+            
+            if indexed_chunks > 0:
+                output_lines.append(f"\n[RAG INDEX] Successfully indexed {indexed_chunks} chunks into vector database")
+                output_lines.append("[TIP] Use search_vector_db to retrieve detailed paper content later\n")
+            
+            # Add citation format guidance
+            output_lines.append("\n📚 INLINE CITATIONS:")
+            for idx, paper in enumerate(results, 1):
+                authors_short = ", ".join([author.name for author in paper.authors[:2]])
+                if len(paper.authors) > 2:
+                    authors_short += " et al."
+                year = paper.published.strftime('%Y')
+                output_lines.append(f"[{idx}] {authors_short} ({year}). {paper.title}. arXiv:{paper.entry_id.split('/')[-1]} ({paper.entry_id})")
+            
+            output_lines.append("\nWhen answering, cite sources inline like: 'Transformers achieve state-of-the-art results [1]...'")
+            
+            return "\n".join(output_lines)
+            
+        except Exception as e:
+            error_msg = f"Error searching arXiv: {str(e)}"
             self.console.print(f"[red]{escape(error_msg)}[/red]")
             return error_msg
