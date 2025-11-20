@@ -1,12 +1,13 @@
 """Chat logging utilities."""
 
+import json
 from pathlib import Path
 from typing import List
 from models import Message
 
 
 class ChatLogger:
-    """Handles saving chat sessions to markdown files."""
+    """Handles saving chat sessions to markdown and JSON files."""
     
     def __init__(self, logs_dir: str = "chat_logs"):
         """Initialize chat logger.

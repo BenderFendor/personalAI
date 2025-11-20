@@ -1,10 +1,8 @@
-import { ChatInterface } from "@/components/chat/chat-interface"
+import { TactileLayout } from "@/components/layout/tactile-layout"
 
 export default function Home() {
   return (
-    <div className="h-[calc(100vh-4rem)] bg-background">
-      <ChatInterface />
-    </div>
+    <TactileLayout />
   )
 }
 

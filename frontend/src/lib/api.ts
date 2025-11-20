@@ -31,6 +31,12 @@ export async function clearHistory() {
     return res.json();
 }
 
+export async function getConfig() {
+  const res = await fetch(`${API_BASE}/config`);
+  if (!res.ok) throw new Error('Failed to fetch config');
+  return res.json();
+}
+
 export async function newChat() {
   const res = await fetch(`${API_BASE}/chat/new`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to create new chat');

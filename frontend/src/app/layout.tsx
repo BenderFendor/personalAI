@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
-import { AppSidebar } from "@/components/layout/app-sidebar"
 import { ThemeProvider } from "@/components/theme-provider"
 import "./globals.css";
 
@@ -11,6 +10,12 @@ const geistSans = Geist({
   subsets: ["latin"],
 });
 
+const instrumentSerif = Instrument_Serif({
+  variable: "--font-instrument-serif",
+  subsets: ["latin"],
+  weight: "400",
+  style: ["normal", "italic"],
+});
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
@@ -29,24 +34,16 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} antialiased bg-[#121212]`}
       >
         <ThemeProvider
             attribute="class"
-            defaultTheme="system"
-            enableSystem
+            defaultTheme="dark"
+            enableSystem={false}
             disableTransitionOnChange
           >
           <NuqsAdapter>
-            <SidebarProvider>
-              <AppSidebar />
-              <main className="w-full flex flex-col">
-                <div className="p-2">
-                  <SidebarTrigger />
-                </div>
-                {children}
-              </main>
-            </SidebarProvider>
+            {children}
           </NuqsAdapter>
         </ThemeProvider>
       </body>

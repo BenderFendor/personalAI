@@ -1,7 +1,8 @@
 "use client"
 
 import { motion } from "framer-motion"
-import { Loader2, CheckCircle2, Globe, FileText, Database, Newspaper } from "lucide-react"
+import { Loader2, CheckCircle2, Globe, FileText, Database, Newspaper, Terminal } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 interface ToolStatusProps {
   toolName: string
@@ -12,11 +13,11 @@ interface ToolStatusProps {
 
 export function ToolStatus({ toolName, args, status, result }: ToolStatusProps) {
   const getIcon = () => {
-    if (toolName.includes("web_search")) return <Globe className="h-4 w-4" />
-    if (toolName.includes("fetch")) return <FileText className="h-4 w-4" />
-    if (toolName.includes("vector")) return <Database className="h-4 w-4" />
-    if (toolName.includes("news")) return <Newspaper className="h-4 w-4" />
-    return <Loader2 className="h-4 w-4" />
+    if (toolName.includes("web_search")) return <Globe className="h-3 w-3" />
+    if (toolName.includes("fetch")) return <FileText className="h-3 w-3" />
+    if (toolName.includes("vector")) return <Database className="h-3 w-3" />
+    if (toolName.includes("news")) return <Newspaper className="h-3 w-3" />
+    return <Terminal className="h-3 w-3" />
   }
 
   // Format args for display
@@ -42,33 +43,25 @@ export function ToolStatus({ toolName, args, status, result }: ToolStatusProps) 
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 5 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="flex items-center gap-3 text-xs text-muted-foreground bg-card/50 p-2.5 rounded-lg my-2 border border-border/40 shadow-sm max-w-md"
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="group"
     >
-      <div className={`p-1.5 rounded-md flex-shrink-0 ${
-        status === "running" 
-          ? "bg-blue-500/10 text-blue-500" 
-          : status === "error"
-            ? "bg-red-500/10 text-red-500"
-            : "bg-green-500/10 text-green-500"
-      }`}>
-        {status === "running" ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          getIcon()
-        )}
+      <div className="flex items-center gap-2 text-stone-400 text-sm">
+         <div className={cn(
+           "opacity-50 font-mono text-xs",
+           status === "running" ? "text-[#d97706]" : "text-stone-600"
+         )}>
+           {status === "running" ? "RUNNING" : "COMPLETE"}
+         </div>
+         <span className="font-medium text-stone-300 text-xs uppercase tracking-wider flex items-center gap-2">
+            {getIcon()}
+            {toolName.replace(/_/g, " ")}
+         </span>
       </div>
-      
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="flex items-center gap-2 font-medium text-foreground/90">
-          <span className="capitalize">{toolName.replace(/_/g, " ")}</span>
-          {status === "completed" && <CheckCircle2 className="h-3 w-3 text-green-500/70" />}
-        </div>
-        <div className="truncate opacity-70 font-mono text-[10px] mt-0.5">
-          {formatArgs(args)}
-        </div>
-      </div>
+      <p className="text-stone-600 text-xs pl-8 mt-1 border-l border-stone-800 ml-1.5 font-mono truncate max-w-md">
+        {formatArgs(args)}
+      </p>
     </motion.div>
   )
 }

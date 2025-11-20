@@ -1,21 +1,27 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Send, Sparkles, StopCircle } from "lucide-react"
+import { Send, StopCircle, ChevronRight } from "lucide-react"
 import { useAppStore, Message } from "@/lib/store"
 import { MessageBubble } from "./message-bubble"
 import { motion, AnimatePresence } from "framer-motion"
+import { getConfig } from "@/lib/api"
 
 export function ChatInterface() {
   const { messages, setMessages, addMessage, updateLastMessage, currentSessionId, reloadChatTrigger, clearChatTrigger } = useAppStore()
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [modelName, setModelName] = useState("LOADING...")
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    getConfig().then(config => {
+      if (config.model) setModelName(config.model.toUpperCase())
+    }).catch(err => console.error("Failed to load config", err))
+  }, [])
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -154,86 +160,72 @@ export function ChatInterface() {
   }
 
   return (
-    <div className="flex flex-col h-full relative bg-gradient-to-b from-background to-muted/20">
-      
-      {/* Messages Area */}
-      <ScrollArea className="flex-1 px-4 md:px-8 py-6" ref={scrollAreaRef}>
-        <div className="max-w-4xl mx-auto min-h-[calc(100vh-10rem)]">
-          <AnimatePresence initial={false}>
-            {messages.length === 0 ? (
-              <motion.div 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex flex-col items-center justify-center h-[60vh] text-center space-y-6"
-              >
-                <div className="w-24 h-24 bg-primary/10 rounded-full flex items-center justify-center mb-4 animate-pulse">
-                  <Sparkles className="w-12 h-12 text-primary" />
-                </div>
-                <h1 className="text-4xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-primary to-purple-600">
-                  How can I help you today?
-                </h1>
-                <p className="text-muted-foreground max-w-md text-lg">
-                  I can help you with research, coding, analysis, and more. 
-                  Just ask!
-                </p>
-              </motion.div>
-            ) : (
-              messages.map((msg, i) => (
-                <MessageBubble 
-                  key={i} 
-                  message={msg} 
-                  isLast={i === messages.length - 1} 
-                />
-              ))
-            )}
-          </AnimatePresence>
-          <div ref={messagesEndRef} className="h-4" />
+    <div className="flex flex-col h-full max-w-3xl mx-auto pt-12 pb-6 px-8 w-full">
+      {/* Header */}
+      <header className="mb-12 border-b border-stone-800 pb-4">
+        <h1 className="text-3xl font-serif text-stone-200">Discussion</h1>
+        <div className="flex gap-2 mt-2">
+           <span className="px-2 py-0.5 bg-stone-800 text-stone-400 text-[10px] rounded font-mono uppercase">{modelName}</span>
+           <span className="px-2 py-0.5 bg-stone-800 text-stone-400 text-[10px] rounded font-mono uppercase">LOCAL</span>
+           <span className="px-2 py-0.5 bg-stone-800 text-stone-400 text-[10px] rounded font-mono uppercase">SECURE</span>
         </div>
-      </ScrollArea>
+      </header>
+
+      {/* Messages Area */}
+      <div className="flex-1 overflow-y-auto space-y-8 pr-4 scrollbar-hide" ref={scrollAreaRef}>
+        <AnimatePresence initial={false}>
+          {messages.length === 0 ? (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex flex-col items-center justify-center h-[40vh] text-center space-y-6"
+            >
+              <div className="w-16 h-16 border border-stone-700 rounded-full flex items-center justify-center mb-4">
+                <div className="w-2 h-2 bg-[#d97706] rounded-full animate-pulse" />
+              </div>
+              <h1 className="text-2xl font-serif tracking-tight text-stone-400">
+                Ready
+              </h1>
+              <p className="text-stone-600 max-w-md text-sm font-mono">
+                How can I help you today?
+              </p>
+            </motion.div>
+          ) : (
+            messages.map((msg, i) => (
+              <MessageBubble 
+                key={i} 
+                message={msg} 
+                isLast={i === messages.length - 1} 
+              />
+            ))
+          )}
+        </AnimatePresence>
+        <div ref={messagesEndRef} className="h-4" />
+      </div>
 
       {/* Input Area */}
-      <div className="p-4 md:p-6 bg-gradient-to-t from-background via-background to-transparent z-10">
-        <div className="max-w-4xl mx-auto relative">
-          <form onSubmit={handleSubmit} className="relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-primary/50 to-purple-600/50 rounded-xl blur opacity-20 group-hover:opacity-40 transition duration-500"></div>
-            <div className="relative flex items-center bg-card rounded-xl border border-border shadow-lg overflow-hidden">
-              <Input
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                placeholder="Message Personal AI..."
-                disabled={isLoading}
-                className="flex-1 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 py-6 px-4 text-base bg-transparent"
-              />
-              <div className="pr-2 flex items-center gap-2">
-                {isLoading ? (
-                  <Button 
-                    type="button" 
-                    onClick={handleStop}
-                    variant="ghost" 
-                    size="icon"
-                    className="h-10 w-10 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-colors"
-                  >
-                    <StopCircle className="h-5 w-5" />
-                  </Button>
-                ) : (
-                  <Button 
-                    type="submit" 
-                    disabled={!input.trim()}
-                    size="icon"
-                    className="h-10 w-10 rounded-lg bg-primary hover:bg-primary/90 transition-all duration-300 shadow-sm"
-                  >
-                    <Send className="h-5 w-5" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          </form>
-          <div className="text-center mt-2">
-            <p className="text-xs text-muted-foreground/60">
-              AI can make mistakes. Check important info.
-            </p>
-          </div>
-        </div>
+      <div className="mt-4 relative">
+        <form onSubmit={handleSubmit}>
+          <input 
+            type="text" 
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder="Type a message..." 
+            disabled={isLoading}
+            className="w-full bg-[#0a0a0a] border border-stone-800 text-stone-300 p-4 pl-6 rounded-xl focus:outline-none focus:border-[#d97706] transition-colors font-mono text-sm"
+          />
+          <button 
+            type="submit"
+            disabled={!input.trim() || isLoading}
+            className="absolute right-3 top-3 p-1.5 bg-[#d97706] text-black rounded-lg hover:bg-orange-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isLoading ? (
+              <StopCircle size={20} onClick={(e) => { e.preventDefault(); handleStop(); }} />
+            ) : (
+              <ChevronRight size={20} />
+            )}
+          </button>
+        </form>
       </div>
     </div>
   )

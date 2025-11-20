@@ -658,22 +658,79 @@ class ChatBot:
             return False
         
         try:
-            # Load log file
-            with open(session['file'], 'r') as f:
-                data = json.load(f)
-                
+            file_path = session['file']
+            
+            # If it's a markdown file, parse it directly
+            if file_path.endswith('.md'):
+                return self._load_markdown_session(file_path, session_id)
+            # Fallback for any legacy JSON files
+            elif file_path.endswith('.json'):
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                self.current_session = session_id
+                self.messages = []
+                for msg in data.get('messages', []):
+                    self.messages.append(Message(
+                        role=msg['role'],
+                        content=msg['content'],
+                        thinking=msg.get('thinking'),
+                        tool_calls=msg.get('tool_calls')
+                    ))
+                self._dirty = False
+                return True
+            
+            return False
+        except Exception as e:
+            self.console.print(f"[red]Error loading session: {e}[/red]")
+            return False
+
+    def _load_markdown_session(self, file_path: str, session_id: str) -> bool:
+        """Legacy support: Load session from markdown file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
             self.current_session = session_id
             self.messages = []
-            for msg in data.get('messages', []):
+            
+            # Very basic parsing - split by "## ROLE [TIMESTAMP]"
+            # This is brittle but better than nothing for legacy files
+            import re
+            parts = re.split(r'## (USER|ASSISTANT|SYSTEM|TOOL) \[.*?\]\n\n', content)
+            
+            # parts[0] is header, then alternating role and content
+            if len(parts) < 2:
+                return False
+                
+            for i in range(1, len(parts), 2):
+                role = parts[i].lower()
+                text = parts[i+1].strip()
+                
+                # Extract thinking if present
+                thinking = None
+                if "### Thinking Process" in text:
+                    think_match = re.search(r'### Thinking Process\n\n```\n(.*?)\n```\n\n', text, re.DOTALL)
+                    if think_match:
+                        thinking = think_match.group(1)
+                        text = text.replace(think_match.group(0), "")
+                
+                # Remove sources footer if present
+                if "**Sources:**" in text:
+                    text = text.split("**Sources:**")[0].strip()
+                
+                # Remove separator
+                text = text.replace("\n\n---", "").strip()
+                
                 self.messages.append(Message(
-                    role=msg['role'],
-                    content=msg['content'],
-                    thinking=msg.get('thinking'),
-                    tool_calls=msg.get('tool_calls')
+                    role=role,
+                    content=text,
+                    thinking=thinking
                 ))
-            self._dirty = False # Loaded session is clean until modified
+            
+            self._dirty = False
             return True
-        except Exception:
+        except Exception as e:
+            self.console.print(f"[red]Error parsing markdown session: {e}[/red]")
             return False
 
     def _auto_fetch_urls(self, tool_name: str, tool_result: str, user_query: str) -> str:
