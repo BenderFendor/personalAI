@@ -123,6 +123,11 @@ class WebSearchRAG:
             # Chunk the content
             chunks = self._chunk_text(content)
             
+            # Limit chunks per page to avoid overwhelming the index with one massive page
+            # Keep first 20 chunks (approx 10k chars) which usually contain the most relevant info
+            if len(chunks) > 20:
+                chunks = chunks[:20]
+            
             # Create metadata for each chunk
             for i, chunk in enumerate(chunks):
                 all_texts.append(chunk)
@@ -146,10 +151,12 @@ class WebSearchRAG:
 
                 # Optional chunk preview to console
                 if self.show_chunk_previews and self.preview_printer:
-                    preview = chunks[i][:200].replace('\n', ' ')
-                    self.preview_printer(
-                        f"[dim]Chunk {i+1}/{len(chunks)} from {title} ({url}): {preview}{'...' if len(chunks[i])>200 else ''}[/dim]"
-                    )
+                    # Only print first chunk to reduce noise
+                    if i == 0:
+                        preview = chunks[i][:100].replace('\n', ' ')
+                        self.preview_printer(
+                            f"[dim]Indexing {len(chunks)} chunks from {title} ({url})...[/dim]"
+                        )
         
         if not all_texts:
             logger.warning("No text content to index from search results")
@@ -157,13 +164,22 @@ class WebSearchRAG:
         
         # Index using the retriever
         try:
-            self.retriever.index_texts(
-                texts=all_texts,
-                ids_prefix=collection_prefix,
-                metadatas=all_metadatas
-            )
-            logger.info(f"Indexed {len(all_texts)} chunks from {len(search_results)} web pages")
-            return len(all_texts)
+            # Batch indexing to avoid timeouts
+            batch_size = 50
+            total_indexed = 0
+            for i in range(0, len(all_texts), batch_size):
+                batch_texts = all_texts[i:i+batch_size]
+                batch_metadatas = all_metadatas[i:i+batch_size]
+                
+                self.retriever.index_texts(
+                    texts=batch_texts,
+                    ids_prefix=collection_prefix,
+                    metadatas=batch_metadatas
+                )
+                total_indexed += len(batch_texts)
+                
+            logger.info(f"Indexed {total_indexed} chunks from {len(search_results)} web pages")
+            return total_indexed
         except Exception as e:
             logger.exception(f"Error indexing search results: {e}")
             raise

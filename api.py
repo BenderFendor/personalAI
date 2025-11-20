@@ -6,10 +6,15 @@ from typing import List, Optional, Dict, Any
 import json
 import shutil
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from chat import ChatBot
 from models import Message
 
 app = FastAPI(title="Personal AI API")
+
+# Create a thread pool for running synchronous tasks
+executor = ThreadPoolExecutor()
 
 # CORS
 app.add_middleware(
@@ -39,16 +44,30 @@ class ConfigUpdate(BaseModel):
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     if request.session_id and request.session_id != chatbot.current_session:
-        # For now, we just use the current session or start a new one if needed
-        # But ChatBot is stateful.
-        pass
+        chatbot.load_session(request.session_id)
     
     async def event_generator():
-        for event in chatbot.chat_stream(request.message):
-            yield f"data: {json.dumps(event)}\n\n"
+        stream = chatbot.chat_stream(request.message)
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                # Run next(stream) in thread pool to avoid blocking the event loop
+                event = await loop.run_in_executor(executor, next, stream)
+                yield f"data: {json.dumps(event)}\n\n"
+            except StopIteration:
+                break
+            except Exception as e:
+                print(f"Error in stream: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                break
         yield "data: [DONE]\n\n"
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/chat/new")
+async def new_chat():
+    chatbot.start_new_session(save_current=True)
+    return {"session_id": chatbot.current_session, "messages": []}
 
 @app.get("/api/history")
 async def get_history():
@@ -105,6 +124,19 @@ class SearchRequest(BaseModel):
 async def rag_search(request: SearchRequest):
     return chatbot.rag_search(request.query)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/api/sessions")
+async def list_sessions():
+    return chatbot.get_all_sessions()
+
+@app.post("/api/sessions/{session_id}/load")
+async def load_session(session_id: str):
+    success = chatbot.load_session(session_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Return the messages so frontend can update immediately
+    return {
+        "status": "loaded", 
+        "session_id": session_id,
+        "messages": [msg.to_ollama_format() for msg in chatbot.messages]
+    }

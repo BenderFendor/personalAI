@@ -252,7 +252,7 @@ class ChatBot:
                     break
             self.session_index.add_session(
                 session_id=self.current_session,
-                file=str(log_path),
+                file_path=str(log_path),
                 title=title or f"Session {self.current_session}",
                 tokens_in=self.total_prompt_tokens,
                 tokens_out=self.total_eval_tokens,
@@ -370,11 +370,14 @@ class ChatBot:
                     
                     # Execute tool
                     tool_result = self.tool_executor.execute(function_name, arguments)
-                    self.display.show_tool_result(tool_result)
+                    
+                    # Truncate massive tool results to prevent context overflow and slow streaming
+                    if len(tool_result) > 5000:
+                        tool_result = tool_result[:5000] + f"\n\n[Truncated {len(tool_result) - 5000} chars...]"
                     
                     # Auto-fetch URLs from search results if applicable
                     tool_result = self._auto_fetch_urls(function_name, tool_result, user_input)
-                    
+
                     # Add result to messages; for Gemini include tool_call_id for proper linkage
                     if self.config.llm_provider == "gemini" and tool_call_id:
                         ollama_messages.append({
@@ -593,17 +596,85 @@ class ChatBot:
             from rag.embeddings import OllamaEmbeddingsWrapper
             from rag.vector_store import ChromaVectorStore
             
-            embeddings = OllamaEmbeddingsWrapper(model=self.config.get('rag', {}).get('embedding_model', 'all-MiniLM-L6-v2'))
+            # Fix: Look for embedding_model in root config first, then rag dict, then default
+            embedding_model = self.config.get('embedding_model') or \
+                              self.config.get('rag', {}).get('embedding_model', 'all-MiniLM-L6-v2')
+            
+            embeddings = OllamaEmbeddingsWrapper(model=embedding_model)
             store = ChromaVectorStore(
-                path=self.config.get('rag', {}).get('chroma_db_path', './chroma_db'),
-                collection_name=self.config.get('rag', {}).get('collection_name', 'rag_documents')
+                path=self.config.get('chroma_db_path') or self.config.get('rag', {}).get('chroma_db_path', './chroma_db'),
+                collection_name=self.config.get('rag_collection') or self.config.get('rag', {}).get('collection_name', 'rag_documents')
             )
             self.rag_retriever = RAGRetriever(embeddings, store)
-            self.web_search_rag = WebSearchRAG(self.rag_retriever, auto_index=self.config.get('rag', {}).get('web_search_rag_enabled', True))
+            self.web_search_rag = WebSearchRAG(self.rag_retriever, auto_index=self.config.get('web_search_rag_enabled', True))
         except Exception as e:
             self.console.print(f"[yellow]Warning: RAG initialization failed: {e}[/yellow]")
             self.web_search_rag = None
             self.rag_retriever = None
+
+    def get_rag_status(self) -> Dict[str, Any]:
+        """Get RAG system status."""
+        if not self.rag_retriever:
+            return {"status": "disabled", "count": 0}
+        return {
+            "status": "active",
+            "count": self.rag_retriever.store.count(),
+            "collection": self.rag_retriever.store.collection_name
+        }
+
+    def rag_index_file(self, file_path: str) -> int:
+        """Index a local file into RAG."""
+        if not self.web_search_rag:
+            raise ValueError("RAG is not enabled")
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Use index_single_page as a proxy for indexing text content
+            return self.web_search_rag.index_single_page(
+                url=f"file://{file_path}",
+                content=content,
+                title=file_path.split('/')[-1]
+            )
+        except Exception as e:
+            self.console.print(f"[red]Error indexing file: {e}[/red]")
+            raise
+
+    def rag_search(self, query: str) -> List[Dict[str, Any]]:
+        """Search RAG database directly."""
+        if not self.rag_retriever:
+            return []
+        return self.rag_retriever.retrieve(query)
+
+    def get_all_sessions(self) -> List[Dict[str, Any]]:
+        """Get all chat sessions."""
+        return self.session_index.list_sessions()
+
+    def load_session(self, session_id: str) -> bool:
+        """Load a specific session."""
+        session = self.session_index.get_session(session_id)
+        if not session:
+            return False
+        
+        try:
+            # Load log file
+            with open(session['file'], 'r') as f:
+                data = json.load(f)
+                
+            self.current_session = session_id
+            self.messages = []
+            for msg in data.get('messages', []):
+                self.messages.append(Message(
+                    role=msg['role'],
+                    content=msg['content'],
+                    thinking=msg.get('thinking'),
+                    tool_calls=msg.get('tool_calls')
+                ))
+            self._dirty = False # Loaded session is clean until modified
+            return True
+        except Exception:
+            return False
 
     def _auto_fetch_urls(self, tool_name: str, tool_result: str, user_query: str) -> str:
         """Automatically fetch URLs from search results if enabled."""

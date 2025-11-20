@@ -32,13 +32,16 @@ class Message:
     
     def to_ollama_format(self) -> Dict[str, Any]:
         """Convert to Ollama API format."""
-        data = {
+        msg = {
             'role': self.role,
             'content': self.content
         }
+        if self.thinking:
+            msg['thinking'] = self.thinking
         if self.tool_calls:
-            data['tool_calls'] = self.tool_calls
-        return data
+            # Ensure tool calls are serializable
+            msg['tool_calls'] = self.tool_calls
+        return msg
 
 
 @dataclass

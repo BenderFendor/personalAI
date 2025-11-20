@@ -68,3 +68,16 @@ class SessionIndex:
         sessions.insert(0, asdict(entry))
         data["sessions"] = sessions[:500]  # cap to avoid unbounded growth
         self._atomic_write(data)
+
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """List all indexed sessions."""
+        data = self._load()
+        return data.get("sessions", [])
+
+    def get_session(self, session_id: str) -> Dict[str, Any] | None:
+        """Get a specific session entry."""
+        data = self._load()
+        for session in data.get("sessions", []):
+            if session["id"] == session_id:
+                return session
+        return None

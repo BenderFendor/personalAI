@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions for PersonalAI
 
-use .venv for the virtual environment
+use .venv for the virtual environment for python.
 use uv for pip installing.
 
 ## Project Overview
