@@ -1,7 +1,7 @@
 """Core chatbot implementation."""
 
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Generator
 import json
 import ollama
 from typing import Optional, List, Dict, Any
@@ -585,366 +585,296 @@ class ChatBot:
 
         return full_thinking, full_response, tool_calls
 
-    def _condense_history(self) -> None:
-        """Summarize older turns into a single system message to reduce token usage.
-
-        Keeps the most recent N turns (user/assistant messages) and replaces
-        the earlier history with a compact summary note.
-        """
+    def _initialize_rag(self) -> None:
+        """Initialize RAG components."""
         try:
-            # Remove any existing summary system message from the front first
-            existing_summary_idx = None
-            for i, m in enumerate(self.messages):
-                if m.role == 'system' and m.content.strip().startswith('[Conversation summary'):
-                    existing_summary_idx = i
-                    break
-            base_messages = self.messages[:]
-            if existing_summary_idx is not None:
-                base_messages.pop(existing_summary_idx)
-
-            if len(base_messages) <= self._keep_last_turns:
-                return
-
-            old = base_messages[:-self._keep_last_turns]
-            recent = base_messages[-self._keep_last_turns:]
-
-            lines: list[str] = [f"[Conversation summary up to turn {len(old)}]"]
-            # Build a compact textual summary (naive truncation per turn)
-            for msg in old:
-                role = 'User' if msg.role == 'user' else ('Assistant' if msg.role == 'assistant' else msg.role.title())
-                snippet = (msg.content or '').replace('\n', ' ')
-                if len(snippet) > 240:
-                    snippet = snippet[:240] + '…'
-                lines.append(f"- {role}: {snippet}")
-                if len(lines) > 30:
-                    lines.append("- … (earlier turns summarized)")
-                    break
-            summary_text = "\n".join(lines)
-
-            summary_msg = Message(role='system', content=summary_text)
-            self.messages = [summary_msg] + recent
-            self.console.print("[yellow]Older turns were condensed into a summary to stay within the context window.[/yellow]")
-        except Exception:
-            # Condensation is best-effort; never fail chat flow
-            pass
-
-    def _parse_tool_calls_from_text(self, text: str) -> tuple[str, list]:
-        """Extract tool calls from a fenced code block labeled 'tool_calls'.
-
-        Format expected:
-        ```tool_calls
-        [ { "name": "web_search", "arguments": { ... } }, ... ]
-        ```
-
-        Returns a tuple of (text_without_block, tool_calls_list)
-        where tool_calls_list are dicts shaped like {"function": {"name": str, "arguments": dict}}
-        """
-        try:
-            import re, json
-            pattern = r"```tool_calls\s*(.*?)\s*```"
-            m = re.search(pattern, text, flags=re.DOTALL | re.IGNORECASE)
-            if not m:
-                return text, []
-            block = m.group(1).strip()
-            calls = json.loads(block)
-            parsed = []
-            if isinstance(calls, dict):
-                calls = [calls]
-            if isinstance(calls, list):
-                for idx, c in enumerate(calls, start=1):
-                    name = (c or {}).get("name")
-                    args = (c or {}).get("arguments", {})
-                    if name and isinstance(args, dict):
-                        parsed.append({
-                            "id": f"tc-{idx}",
-                            "function": {"name": name, "arguments": args}
-                        })
-            # Remove the block from the text
-            new_text = re.sub(pattern, "", text, flags=re.DOTALL | re.IGNORECASE).strip()
-            return new_text, parsed
-        except Exception:
-            return text, []
-
-    def _enrich_error_message(self, err: Exception) -> str:
-        """Return an actionable troubleshooting message for common failures.
-
-        Covers:
-        - Ollama 404 'model not found' with Gemini-like model names.
-        - Gemini provider issues (missing API key or bad model id).
-        """
-        try:
-            msg = str(err).lower()
-            provider = self.config.llm_provider
-            cfg = self.config.get_all()
-            model = cfg.get("model")
-            gemini_model = cfg.get("gemini_model")
-
-            lines: list[str] = []
-
-            # Case 1: Ollama cannot find model
-            if ("model" in msg and "not found" in msg) or ("status code: 404" in msg):
-                if provider == "ollama":
-                    # Detect if user put a Gemini-like id into Ollama 'model'
-                    if model and str(model).lower().startswith("gemini"):
-                        lines.append("[bold]It looks like you're trying to use a Gemini model with the Ollama provider.[/bold]")
-                        lines.append("Fix options:")
-                        lines.append("- Use Gemini: set in config.json → 'llm_provider': 'gemini', and set 'gemini_model': 'gemini-1.5-flash' (or 'gemini-1.5-pro').")
-                        lines.append("  Also set GOOGLE_API_KEY in your environment or .env file.")
-                        lines.append("- Stay on Ollama: change 'model' to a local model id (e.g., 'qwen3', 'llama3.1', 'mistral') and pull it if needed:")
-                        lines.append("  ollama pull qwen3")
-                    else:
-                        lines.append("[bold]Ollama can't find the requested model.[/bold]")
-                        lines.append(f"Requested: '{model}'")
-                        lines.append("Try pulling or switching models. Examples:")
-                        lines.append("- ollama pull qwen3  (then set 'model': 'qwen3')")
-                        lines.append("- ollama pull llama3.1  (then set 'model': 'llama3.1')")
-                else:
-                    lines.append("The backend reported 'model not found', but provider isn't Ollama. Double-check config.json.")
-
-            # Case 2: Gemini provider problems
-            if provider == "gemini":
-                # Missing API key
-                if "api key" in msg or "permission" in msg or "unauthorized" in msg:
-                    lines.append("[bold]Gemini requires GOOGLE_API_KEY.[/bold] Set it in your environment or .env:")
-                    lines.append("GOOGLE_API_KEY=your_key_here")
-                # Common wrong model ids
-                if gemini_model and gemini_model.lower() in {"gemini", "gemini-flash", "gemini-flash-latest"}:
-                    lines.append("Use explicit Gemini ids like 'gemini-1.5-flash' or 'gemini-1.5-pro'.")
-
-            if not lines:
-                return ""
-
-            # Format as a friendly Rich block
-            header = "\n[bold yellow]Troubleshooting tips[/bold yellow]\n"
-            bullet = "\n".join(f" • {escape(line)}" for line in lines)
-            where = (
-                "\n[dim]Edit settings in config.json. Current values: "
-                f"llm_provider='{escape(str(provider))}', model='{escape(str(model))}', gemini_model='{escape(str(gemini_model))}'.[/dim]"
-            )
-            return header + bullet + where
-        except Exception:
-            return ""
-    
-    def _auto_fetch_urls(self, tool_name: str, tool_result: str, user_query: str) -> str:
-        """Automatically fetch and parse URLs from search results.
-        
-        Args:
-            tool_name: Name of the tool that generated the results
-            tool_result: Raw tool result text
-            user_query: Original user query for relevance scoring
+            from rag.web_search_rag import WebSearchRAG
+            from rag.retriever import RAGRetriever
+            from rag.embeddings import OllamaEmbeddingsWrapper
+            from rag.vector_store import ChromaVectorStore
             
-        Returns:
-            Enhanced tool result with fetched content appended
-        """
+            embeddings = OllamaEmbeddingsWrapper(model=self.config.get('rag', {}).get('embedding_model', 'all-MiniLM-L6-v2'))
+            store = ChromaVectorStore(
+                path=self.config.get('rag', {}).get('chroma_db_path', './chroma_db'),
+                collection_name=self.config.get('rag', {}).get('collection_name', 'rag_documents')
+            )
+            self.rag_retriever = RAGRetriever(embeddings, store)
+            self.web_search_rag = WebSearchRAG(self.rag_retriever, auto_index=self.config.get('rag', {}).get('web_search_rag_enabled', True))
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: RAG initialization failed: {e}[/yellow]")
+            self.web_search_rag = None
+            self.rag_retriever = None
+
+    def _auto_fetch_urls(self, tool_name: str, tool_result: str, user_query: str) -> str:
+        """Automatically fetch URLs from search results if enabled."""
         if not self.config.get('auto_fetch_urls', True):
             return tool_result
-        
-        auto_fetch_tools = self.config.get('auto_fetch_tools', ['news_search', 'web_search'])
-        if tool_name not in auto_fetch_tools:
+            
+        if tool_name not in ['web_search', 'search_and_fetch', 'news_search']:
             return tool_result
-        
+            
         try:
-            # Extract and rank URLs by semantic relevance
-            threshold = self.config.get('auto_fetch_threshold', 0.6)
-            ranked_urls = self.display.extract_and_rank_urls(
-                tool_result, 
-                user_query, 
-                threshold
-            )
-            
-            if not ranked_urls:
+            urls = self.display.extract_and_rank_urls(tool_result, user_query, threshold=0.6)
+            if not urls:
                 return tool_result
-            
-            # Limit to top 3 URLs to avoid excessive fetching
-            urls_to_fetch = ranked_urls[:3]
-            
-            # Display what we're going to fetch
-            self.console.print(f"\n[bold blue]>> Auto-fetching top {len(urls_to_fetch)} URLs[/bold blue]")
-            
-            fetched_content = "\n\n[AUTO-FETCHED CONTENT]\n" + "=" * 60 + "\n"
-            any_fetched = False
-            
-            for idx, url_data in enumerate(urls_to_fetch, 1):
-                url = url_data['url']
-                score = url_data['score']
                 
-                # Check cache first
+            fetched_content = []
+            for item in urls[:2]: # Limit to top 2
+                url = item['url']
                 if url in self.url_cache:
-                    self.console.print(f"   [{idx}] [cyan]✓ Cached:[/cyan] {url[:70]}")
-                    fetched_content += f"\n[{idx}] {url} (relevance: {score:.2f}) [CACHED]\n"
-                    fetched_content += "-" * 60 + "\n"
-                    fetched_content += self.url_cache[url][:1500] + "\n"
-                    any_fetched = True
                     continue
                 
-                # Fetch content
-                self.console.print(f"   [{idx}] [yellow]⟳ Fetching:[/yellow] {url[:70]}")
-                
-                try:
-                    content = self.tool_executor.execute('fetch_url_content', {'url': url, 'max_length': 2000})
-                    
-                    # Check if fetch was successful (not an error message)
-                    if not content.startswith('Error'):
-                        # Cache it
-                        self.url_cache[url] = content
-                        
-                        fetched_content += f"\n[{idx}] {url} (relevance: {score:.2f})\n"
-                        fetched_content += "-" * 60 + "\n"
-                        fetched_content += content[:1500] + "\n"
-                        self.console.print(f"   [{idx}] [green]✓ Success[/green]")
-                        any_fetched = True
-                    else:
-                        # Skip unsupported content (videos, etc.) silently, only show other errors
-                        if 'Cannot extract text from' in content or 'not currently supported' in content:
-                            self.console.print(f"   [{idx}] [dim]⊘ Skipped (unsupported content)[/dim]")
-                        else:
-                            self.console.print(f"   [{idx}] [red]✗ {escape(content[:70])}[/red]")
-                
-                except Exception as e:
-                    self.console.print(f"   [{idx}] [red]✗ Error: {escape(str(e)[:50])}[/red]")
+                self.console.print(f"[dim]Auto-fetching: {url}[/dim]")
+                content = self.tool_executor.fetch_url_content(url)
+                self.url_cache[url] = content
+                fetched_content.append(f"--- Content from {url} ---\n{content}\n--- End of {url} ---")
             
-            if any_fetched:
-                fetched_content += "\n" + "=" * 60
-                return tool_result + fetched_content
+            if fetched_content:
+                return tool_result + "\n\n" + "\n".join(fetched_content)
+        except Exception:
+            pass
             
-            return tool_result
-            
-        except Exception as e:
-            self.console.print(f"[yellow]Warning: Auto-fetch failed: {str(e)}[/yellow]")
-            return tool_result
-    
-    def _initialize_rag(self) -> None:
-        """Initialize RAG system components."""
-        try:
-            from rag import OllamaEmbeddingsWrapper, ChromaVectorStore, RAGRetriever, WebSearchRAG
-            
-            # Initialize embeddings
-            embedding_model = self.config.get('embedding_model', 'embeddinggemma')
-            embeddings = OllamaEmbeddingsWrapper(
-                model=embedding_model,
-                base_url="http://localhost:11434"
-            )
-            
-            # Initialize vector store
-            db_path = self.config.get('chroma_db_path', './chroma_db')
-            collection_name = self.config.get('rag_collection', 'rag_documents')
-            vector_store = ChromaVectorStore(
-                path=db_path,
-                collection_name=collection_name
-            )
-            
-            # Initialize retriever
-            self.rag_retriever = RAGRetriever(embeddings, vector_store)
-            
-            # Initialize web search RAG if enabled
-            if self.config.get('web_search_rag_enabled', True):
-                chunk_size = self.config.get('chunk_size', 500)
-                chunk_overlap = self.config.get('chunk_overlap', 100)
-                auto_index = self.config.get('web_search_auto_index', True)
-                show_chunk_previews = self.config.get('show_chunk_previews', True)
-                
-                # Provide preview_printer callback to write chunk previews using console
-                self.web_search_rag = WebSearchRAG(
-                    self.rag_retriever,
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                    auto_index=auto_index,
-                    show_chunk_previews=show_chunk_previews,
-                    preview_printer=lambda text: self.console.print(text)
-                )
-            
-            self.console.print("[dim]RAG system initialized[/dim]")
-        except ImportError as e:
-            self.console.print(f"[yellow]Warning: RAG dependencies not available: {e}[/yellow]")
-            self.rag_retriever = None
-            self.web_search_rag = None
-        except Exception as e:
-            self.console.print(f"[yellow]Warning: Failed to initialize RAG: {e}[/yellow]")
-            self.rag_retriever = None
-            self.web_search_rag = None
-    
-    def get_rag_status(self) -> Dict[str, Any]:
-        """Get RAG system status."""
-        if not self.rag_retriever:
-            return {
-                'enabled': False,
-                'doc_count': 0,
-                'collection': 'N/A',
-                'embedding_model': 'N/A'
-            }
-        
-        return {
-            'enabled': True,
-            'doc_count': self.rag_retriever.store.count(),
-            'collection': self.config.get('rag_collection', 'rag_documents'),
-            'embedding_model': self.config.get('embedding_model', 'embeddinggemma')
-        }
-    
-    def rag_index_file(self, file_path: str) -> int:
-        """Index a file into the RAG knowledge base.
-        
-        Args:
-            file_path: Path to file to index
-            
-        Returns:
-            Number of chunks indexed
-        """
-        if not self.rag_retriever:
-            raise RuntimeError("RAG system not initialized")
-        
-        # Read file
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Use web_search_rag for chunking if available
-        if self.web_search_rag:
-            return self.web_search_rag.index_single_page(
-                url=f"file://{file_path}",
-                content=content,
-                title=file_path
-            )
-        else:
-            # Simple indexing without chunking
-            self.rag_retriever.index_texts([content], ids_prefix="file")
-            return 1
-    
-    def rag_search(self, query: str) -> List[Dict]:
-        """Search RAG knowledge base.
-        
-        Args:
-            query: Search query
-            
-        Returns:
-            List of relevant documents
-        """
-        if not self.rag_retriever:
-            raise RuntimeError("RAG system not initialized")
-        
-        top_k = self.config.get('rag_top_k', 3)
-        return self.rag_retriever.retrieve(query, top_k=top_k)
-    
-    def rag_clear(self) -> None:
-        """Clear the RAG vector database."""
-        if not self.rag_retriever:
-            raise RuntimeError("RAG system not initialized")
-        
-        self.rag_retriever.store.reset()
+        return tool_result
 
-    def rag_hard_delete(self) -> None:
-        """Hard delete the RAG collection (drop & recreate)."""
-        if not self.rag_retriever:
-            raise RuntimeError("RAG system not initialized")
-        self.rag_retriever.store.reset()
-    
-    def rag_rebuild(self) -> int:
-        """Placeholder: Returns current document count; does not rebuild RAG index.
+    def _condense_history(self) -> None:
+        """Condense message history to save context."""
+        if len(self.messages) <= 2:
+            return
+            
+        self.console.print("[yellow]Condensing history...[/yellow]")
+        # Keep system prompt (implicit) and last few messages
+        keep_count = self._keep_last_turns * 2 # user + assistant
+        if len(self.messages) > keep_count:
+            removed = len(self.messages) - keep_count
+            self.messages = self.messages[-keep_count:]
+            self.console.print(f"[dim]Removed {removed} old messages.[/dim]")
+
+    def _parse_tool_calls_from_text(self, text: str) -> tuple[str, list]:
+        """Parse tool calls from text block."""
+        import re
+        import json
         
-        Returns:
-            Number of documents currently indexed (no rebuild performed)
+        pattern = r"```tool_calls\s*(\[.*?\])\s*```"
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            try:
+                json_str = match.group(1)
+                tool_calls = json.loads(json_str)
+                # Remove the block from text
+                clean_text = text.replace(match.group(0), "").strip()
+                return clean_text, tool_calls
+            except Exception:
+                pass
+        return text, []
+
+    def _enrich_error_message(self, error: Exception) -> str | None:
+        """Add helpful context to errors."""
+        msg = str(error).lower()
+        if "connection refused" in msg:
+            return "Is Ollama running? Try 'ollama serve' or check if the service is active."
+        if "model" in msg and "not found" in msg:
+            return f"Model '{self.config.model}' not found. Try 'ollama pull {self.config.model}'."
+        return None
+
+    def chat_stream(self, user_input: str) -> Generator[Dict[str, Any], None, None]:
+        """Stream chat response as events instead of printing to console.
+        
+        Yields:
+            Dict with keys: type, content, metadata
         """
-        if not self.rag_retriever:
-            raise RuntimeError("RAG system not initialized")
+        # Add user message
+        user_msg = Message(role='user', content=user_input)
+        self.messages.append(user_msg)
+        if user_input.strip():
+            self._dirty = True
         
-        # This is a placeholder - implement actual rebuild logic based on your document sources
-        # For now, just return current count
-        return self.rag_retriever.store.count()
+        # Prepare messages
+        ollama_messages = [{'role': 'system', 'content': self._get_system_prompt()}]
+        for msg in self.messages[:-1]:
+            ollama_messages.append(msg.to_ollama_format())
+        ollama_messages.append({'role': 'user', 'content': user_input})
+        
+        # Context usage
+        context_usage = self.context_calc.calculate_usage(ollama_messages, self._get_system_prompt())
+        yield {
+            "type": "context_update",
+            "data": {
+                "current_tokens": context_usage.current_tokens,
+                "max_tokens": context_usage.max_tokens,
+                "percentage": context_usage.percentage,
+                "status": "red" if context_usage.percentage >= self._warn_threshold * 100 else "yellow" if context_usage.percentage >= 0.7 * 100 else "green"
+            }
+        }
+        
+        # Check limits
+        if context_usage.percentage >= self._truncate_threshold * 100:
+            self._condense_history()
+            # Rebuild messages
+            ollama_messages = [{'role': 'system', 'content': self._get_system_prompt()}]
+            for msg in self.messages[:-1]:
+                ollama_messages.append(msg.to_ollama_format())
+            ollama_messages.append({'role': 'user', 'content': user_input})
+        
+        # Initial response
+        full_thinking = ""
+        full_response = ""
+        tool_calls = []
+        
+        # Stream generator
+        for event in self._stream_generator(ollama_messages):
+            yield event
+            if event["type"] == "token":
+                full_response += event["content"]
+            elif event["type"] == "thinking":
+                full_thinking += event["content"]
+            elif event["type"] == "tool_calls":
+                tool_calls = event["data"]
+        
+        # Tool loop
+        max_iterations = self.config.max_tool_iterations
+        iteration = 0
+        
+        while tool_calls and iteration < max_iterations:
+            iteration += 1
+            
+            # Add assistant message
+            assistant_msg = {
+                'role': 'assistant',
+                'content': full_response if full_response else ''
+            }
+            if tool_calls:
+                assistant_msg['tool_calls'] = tool_calls
+            ollama_messages.append(assistant_msg)
+            
+            # Execute tools
+            for tool_call in tool_calls:
+                if isinstance(tool_call, dict):
+                    function_name = tool_call['function']['name']
+                    arguments = tool_call['function']['arguments']
+                    tool_call_id = tool_call.get('id')
+                else:
+                    function_name = tool_call.function.name
+                    arguments = tool_call.function.arguments
+                    tool_call_id = None
+                
+                yield {"type": "tool_start", "name": function_name, "args": arguments}
+                
+                tool_result = self.tool_executor.execute(function_name, arguments)
+                
+                # Auto-fetch
+                tool_result = self._auto_fetch_urls(function_name, tool_result, user_input)
+                
+                yield {"type": "tool_result", "name": function_name, "result": tool_result}
+                
+                if self.config.llm_provider == "gemini" and tool_call_id:
+                    ollama_messages.append({
+                        'role': 'tool',
+                        'content': tool_result,
+                        'tool_call_id': tool_call_id
+                    })
+                else:
+                    ollama_messages.append({
+                        'role': 'tool',
+                        'content': tool_result
+                    })
+            
+            # Next response
+            full_response = "" # Reset for next turn
+            tool_calls = []
+            
+            for event in self._stream_generator(ollama_messages):
+                yield event
+                if event["type"] == "token":
+                    full_response += event["content"]
+                elif event["type"] == "thinking":
+                    full_thinking += event["content"]
+                elif event["type"] == "tool_calls":
+                    tool_calls = event["data"]
+        
+        # Save message
+        self.messages.append(Message(
+            role='assistant',
+            content=full_response,
+            thinking=full_thinking if full_thinking else None
+        ))
+        if (full_response and full_response.strip()) or (full_thinking and full_thinking.strip()):
+            self._dirty = True
+
+    def _stream_generator(self, messages: List[Dict[str, Any]]) -> Generator[Dict[str, Any], None, None]:
+        """Generator for streaming response events."""
+        if self.config.llm_provider == "gemini":
+            if GeminiProvider is None:
+                yield {"type": "error", "content": "Gemini provider unavailable"}
+                return
+            if self._gemini_provider is None:
+                self._gemini_provider = GeminiProvider(
+                    model=self.config.gemini_model,
+                    api_key=self.config.gemini_api_key,
+                    temperature=self.config.temperature,
+                    minimal_safety=self.config.gemini_safety_minimal,
+                )
+                if self.config.tools_enabled and LangChainToolAdapter:
+                    adapter = LangChainToolAdapter(self.tool_executor)
+                    lc_tools = adapter.build_tools(self.tools)
+                    self._gemini_provider.bind_tools(lc_tools)
+            
+            full_response = ""
+            tool_calls = []
+            for chunk in self._gemini_provider.stream(messages):
+                content_chunk = chunk.get("content")
+                if content_chunk:
+                    full_response += content_chunk
+                    yield {"type": "token", "content": content_chunk}
+                if chunk.get("tool_calls"):
+                    tool_calls = chunk["tool_calls"]
+            
+            if tool_calls:
+                yield {"type": "tool_calls", "data": tool_calls}
+            elif "```tool_calls" in full_response:
+                cleaned, parsed_calls = self._parse_tool_calls_from_text(full_response)
+                if parsed_calls:
+                    # We might need to correct the response if we want to hide the block
+                    # But for now let's just yield the tool calls
+                    yield {"type": "tool_calls", "data": parsed_calls}
+
+        else:
+            response = ollama.chat(
+                model=self.config.model,
+                messages=messages,
+                tools=self.tools if self.config.tools_enabled else None,
+                stream=True,
+                options={'temperature': self.config.temperature}
+            )
+            
+            for chunk in response:
+                message = chunk.get('message', {})
+                if 'thinking' in message and message['thinking']:
+                    yield {"type": "thinking", "content": message['thinking']}
+                
+                if 'content' in message and message['content']:
+                    yield {"type": "token", "content": message['content']}
+                
+                if 'tool_calls' in message:
+                    raw_tool_calls = message['tool_calls']
+                    tool_calls = []
+                    for tc in raw_tool_calls:
+                        if isinstance(tc, dict):
+                            tool_calls.append(tc)
+                        else:
+                            tool_calls.append({
+                                'function': {
+                                    'name': tc.function.name,
+                                    'arguments': tc.function.arguments
+                                }
+                            })
+                    yield {"type": "tool_calls", "data": tool_calls}
+                
+                # Metadata
+                if 'prompt_eval_count' in chunk or 'eval_count' in chunk:
+                    try:
+                        pe = int(chunk.get('prompt_eval_count') or 0)
+                        ec = int(chunk.get('eval_count') or 0)
+                        self.total_prompt_tokens += pe
+                        self.total_eval_tokens += ec
+                    except Exception:
+                        pass
