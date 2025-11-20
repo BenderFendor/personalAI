@@ -103,7 +103,7 @@ function FolderCard({ session, index, total, isSelected, onClick }: FolderCardPr
       initial={{ y: 50, opacity: 0 }}
       animate={{ 
         y: index * 65, // Consistent stacking spacing
-        zIndex: isSelected ? 50 : index, // Selected pops up but respects stack order mostly? No, selected needs to be high
+        zIndex: isSelected ? 50 : index, // Selected pops up but respects stack order mostly
         scale: isSelected ? 1.05 : 1,
         x: isSelected ? 0 : 0,
         opacity: 1,
@@ -113,55 +113,80 @@ function FolderCard({ session, index, total, isSelected, onClick }: FolderCardPr
         transition: { duration: 0.2 }
       }}
       className={cn(
-        "absolute left-4 right-4 h-40 cursor-pointer transition-all duration-500 ease-out",
-        "rounded-xl border shadow-2xl flex flex-col overflow-hidden",
-        isSelected 
-          ? "bg-[#d97706] border-[#f59e0b] z-50 shadow-[0_20px_50px_rgba(0,0,0,0.5)]" 
-          : "bg-[#1a1a1a] border-[#333] hover:bg-[#222]"
+        "absolute left-4 right-4 h-40 cursor-pointer transition-all duration-500 ease-out group",
+        "bg-transparent"
       )}
     >
-      {/* Folder Tab Accent */}
+      {/* Drop Shadow Wrapper for the composite shape */}
       <div className={cn(
-        "h-1 w-full",
-        isSelected ? "bg-[#fff]/20" : "bg-[#333]"
-      )} />
-
-      <div className="p-5 flex flex-col h-full justify-between relative">
-        {/* Content */}
-        <div className="space-y-2">
-          <div className="flex justify-between items-start gap-4">
-            <h3 className={cn(
-              "font-[family-name:var(--font-instrument-serif)] text-xl leading-tight transition-colors duration-300",
-              isSelected ? "text-[#0c0c0c]" : "text-[#e5e5e5]"
-            )}>
-              {session.title || "Untitled Entry"}
-            </h3>
-            {isSelected && <div className="w-2 h-2 rounded-full bg-[#0c0c0c] shrink-0 mt-2 animate-pulse" />}
-          </div>
-          
-          <p className={cn(
-            "text-xs font-mono uppercase tracking-wider",
-            isSelected ? "text-[#0c0c0c]/60" : "text-[#666]"
+        "relative w-full h-full transition-all duration-300",
+        isSelected ? "drop-shadow-[0_20px_50px_rgba(217,119,6,0.3)]" : "drop-shadow-2xl"
+      )}>
+        
+        {/* TAB */}
+        <div className={cn(
+          "absolute top-0 left-0 w-24 h-8 z-20 flex items-center justify-center",
+          "rounded-t-xl border-t border-l border-r",
+          "transition-colors duration-300",
+          isSelected 
+            ? "bg-[#d97706] border-[#f59e0b]" 
+            : "bg-[#1a1a1a] border-[#333] group-hover:bg-[#222]"
+        )}>
+          <span className={cn(
+            "text-[10px] font-mono font-bold",
+            isSelected ? "text-[#0c0c0c]/50" : "text-[#333]"
           )}>
-            {session.started_at ? formatDistanceToNow(new Date(session.started_at), { addSuffix: true }) : 'Unknown'}
-          </p>
+            {(index + 1).toString().padStart(2, '0')}
+          </span>
         </div>
 
-        {/* Footer / Action */}
-        {isSelected && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.1 }}
-            className="flex items-center gap-2 text-[#0c0c0c] font-mono text-[10px] uppercase tracking-[0.15em] border-t border-[#0c0c0c]/10 pt-3 mt-2"
-          >
-            <span>Active Session</span>
-            <ChevronRight size={12} />
-          </motion.div>
-        )}
-        
-        {/* Background Texture/Noise for tactile feel */}
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-noise mix-blend-overlay" />
+        {/* BODY */}
+        <div className={cn(
+          "absolute top-7 w-full h-[calc(100%)] z-10",
+          "rounded-b-xl rounded-tr-xl rounded-tl-none border",
+          "transition-colors duration-300",
+          isSelected 
+            ? "bg-[#d97706] border-[#f59e0b]" 
+            : "bg-[#1a1a1a] border-[#333] group-hover:bg-[#222]"
+        )}>
+          <div className="p-5 flex flex-col h-full justify-between relative">
+            {/* Content */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-start gap-4">
+                <h3 className={cn(
+                  "font-[family-name:var(--font-instrument-serif)] text-xl leading-tight transition-colors duration-300",
+                  isSelected ? "text-[#0c0c0c]" : "text-[#e5e5e5]"
+                )}>
+                  {session.title || "Untitled Entry"}
+                </h3>
+                {isSelected && <div className="w-2 h-2 rounded-full bg-[#0c0c0c] shrink-0 mt-2 animate-pulse" />}
+              </div>
+              
+              <p className={cn(
+                "text-xs font-mono uppercase tracking-wider",
+                isSelected ? "text-[#0c0c0c]/60" : "text-[#666]"
+              )}>
+                {session.started_at ? formatDistanceToNow(new Date(session.started_at), { addSuffix: true }) : 'Unknown'}
+              </p>
+            </div>
+
+            {/* Footer / Action */}
+            {isSelected && (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.1 }}
+                className="flex items-center gap-2 text-[#0c0c0c] font-mono text-[10px] uppercase tracking-[0.15em] border-t border-[#0c0c0c]/10 pt-3 mt-2"
+              >
+                <span>Active Session</span>
+                <ChevronRight size={12} />
+              </motion.div>
+            )}
+            
+            {/* Background Texture/Noise for tactile feel */}
+            <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-noise mix-blend-overlay" />
+          </div>
+        </div>
       </div>
     </motion.div>
   )

@@ -11,3 +11,8 @@ Fix the side bar to work as it doesn't right now and the crtl+] keybind doesn't 
 Also research how to get the ollama context size to truly work as the one we have right now doesn't do anything.
 
 I need to get the context like current context window size from the model itself then when responses are send and reserviced I need that context window to update so like how much of the current context window is used.
+
+
+# Personal Indexing
+
+It would also be cool to have this index like papers I have downlaoded and use those papers and have like context of my important saved folders and files on my computer.

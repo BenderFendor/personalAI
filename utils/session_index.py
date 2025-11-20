@@ -81,3 +81,61 @@ class SessionIndex:
             if session["id"] == session_id:
                 return session
         return None
+
+    def rebuild_from_directory(self, chat_logs_dir: str | Path = "chat_logs") -> int:
+        """Scan chat_logs directory and rebuild index from existing markdown files."""
+        import re
+        
+        chat_logs_path = Path(chat_logs_dir)
+        if not chat_logs_path.exists():
+            return 0
+        
+        # Find all markdown files matching pattern chat_YYYYMMDD_HHMMSS.md
+        md_files = sorted(chat_logs_path.glob("chat_*.md"), reverse=True)
+        
+        sessions = []
+        for md_file in md_files:
+            try:
+                # Extract session_id from filename (e.g., chat_20251120_080926.md -> 20251120_080926)
+                match = re.match(r'chat_(\d{8}_\d{6})\.md', md_file.name)
+                if not match:
+                    continue
+                
+                session_id = match.group(1)
+                
+                # Parse the markdown file to extract title and timestamp
+                content = md_file.read_text(encoding='utf-8')
+                
+                # Extract started_at from first timestamp in file (format: ## ROLE [YYYY-MM-DD HH:MM:SS])
+                timestamp_match = re.search(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', content)
+                started_at = timestamp_match.group(1) if timestamp_match else session_id[:8] + 'T' + session_id[9:11] + ':' + session_id[11:13] + ':' + session_id[13:15]
+                
+                # Extract title from first USER message (up to 50 chars)
+                title_match = re.search(r'## USER \[.*?\]\n\n(.*?)(?:\n\n|$)', content, re.DOTALL)
+                if title_match:
+                    title = title_match.group(1).strip()[:50]
+                    # Remove markdown formatting
+                    title = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', title)  # Remove links
+                    title = re.sub(r'[*_`#]', '', title)  # Remove formatting chars
+                else:
+                    title = f"Chat {session_id}"
+                
+                entry = {
+                    "id": session_id,
+                    "file": str(md_file),
+                    "started_at": started_at,
+                    "title": title,
+                    "tokens_in": 0,
+                    "tokens_out": 0
+                }
+                sessions.append(entry)
+                
+            except Exception as e:
+                print(f"Warning: Failed to parse {md_file.name}: {e}")
+                continue
+        
+        # Write rebuilt index
+        data = {"version": 1, "sessions": sessions[:500]}  # cap to 500 most recent
+        self._atomic_write(data)
+        
+        return len(sessions)

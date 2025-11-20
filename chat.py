@@ -37,6 +37,13 @@ class ChatBot:
         self.display = DisplayHelper(self.console)
         self.session_index = SessionIndex("chat_logs/index.json")
         
+        # Rebuild index from chat_logs if it's empty or missing
+        existing_sessions = self.session_index.list_sessions()
+        if not existing_sessions:
+            count = self.session_index.rebuild_from_directory(logs_dir)
+            if count > 0:
+                self.console.print(f"[green]Indexed {count} chat sessions from {logs_dir}/[/green]")
+        
         self.messages: List[Message] = []
         self.current_session = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Track whether the session has any substantive interaction to avoid
@@ -650,6 +657,10 @@ class ChatBot:
     def get_all_sessions(self) -> List[Dict[str, Any]]:
         """Get all chat sessions."""
         return self.session_index.list_sessions()
+
+    def rebuild_session_index(self) -> int:
+        """Rebuild the session index from chat_logs directory."""
+        return self.session_index.rebuild_from_directory("chat_logs")
 
     def load_session(self, session_id: str) -> bool:
         """Load a specific session."""

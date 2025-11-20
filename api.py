@@ -128,6 +128,12 @@ async def rag_search(request: SearchRequest):
 async def list_sessions():
     return chatbot.get_all_sessions()
 
+@app.post("/api/sessions/rebuild")
+async def rebuild_sessions():
+    """Rebuild session index from chat_logs directory."""
+    count = chatbot.rebuild_session_index()
+    return {"status": "success", "sessions_indexed": count}
+
 @app.post("/api/sessions/{session_id}/load")
 async def load_session(session_id: str):
     success = chatbot.load_session(session_id)
