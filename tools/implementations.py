@@ -1061,6 +1061,7 @@ class ToolExecutor:
             self.console.print(f"\n[cyan]📊 Research Depth: {current_depth + 1}/{depth}[/cyan]")
             
             # STEP 1: PLANNING - Generate sub-queries
+            self.console.print(f"[dim]Generating search queries...[/dim]")
             sub_queries = self._generate_sub_queries(
                 topic=topic,
                 previous_findings=research_state["findings"],
@@ -1070,7 +1071,7 @@ class ToolExecutor:
             
             self.console.print(f"[dim]Sub-queries: {sub_queries}[/dim]")
             
-            # STEP 2: EXECUTION - Multi-source parallel search
+            # STEP 2: EXECUTION - Multi-source search for each sub-query
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -1082,11 +1083,19 @@ class ToolExecutor:
                 )
                 
                 for i, query in enumerate(sub_queries):
+                    self.console.print(f"\n[bold blue]🔍 [{i+1}/{len(sub_queries)}] Searching: {query}[/bold blue]")
+                    
                     # Multi-source search
                     findings = self._execute_multi_source_search(
                         query=query,
                         include_academic=include_academic
                     )
+                    
+                    # Show a preview of what was found
+                    if findings and len(findings) > 100:
+                        preview = findings[:300].replace('\n', ' ')
+                        self.console.print(f"[dim]Found: {preview}...[/dim]")
+                    
                     research_state["findings"].append({
                         "query": query,
                         "content": findings,
@@ -1095,6 +1104,7 @@ class ToolExecutor:
                     progress.update(search_task, advance=1)
             
             # STEP 3: EVALUATION - Assess research quality
+            self.console.print(f"\n[dim]Evaluating research quality...[/dim]")
             quality_score = self._evaluate_research_quality(
                 topic=topic,
                 findings=research_state["findings"]
@@ -1115,6 +1125,7 @@ class ToolExecutor:
             research_state["current_depth"] += 1
         
         # STEP 5: SYNTHESIS - Generate final report
+        self.console.print(f"\n[bold magenta]📝 Synthesizing research report...[/bold magenta]")
         report = self._synthesize_report(
             topic=topic,
             findings=research_state["findings"],
@@ -1140,7 +1151,7 @@ class ToolExecutor:
             recent = previous_findings[-breadth:]
             context = "\n".join([f"- {f['query']}: {f['content'][:200]}..." for f in recent])
         
-        planning_prompt = f"""You are a research planning assistant. Break down the following research topic into {breadth} distinct, specific sub-questions for investigation.
+        planning_prompt = f"""You are a research planning assistant. Break down the following research topic into {breadth} distinct, specific sub-questions for web search investigation.
 
 Research Topic: {topic}
 Current Depth: {depth_level + 1}
@@ -1148,46 +1159,61 @@ Current Depth: {depth_level + 1}
 {f"Previous Findings (use to identify gaps):\n{context}" if context else ""}
 
 Requirements:
-- Each sub-question must be searchable and specific
+- Each sub-question must be a practical web search query (not overly academic)
 - Avoid redundancy with previous queries
-- Focus on different aspects: overview, recent developments, controversies, applications, limitations
-- Return ONLY a JSON array of strings
+- Focus on different aspects: definition/overview, tools/software, best practices, examples, community resources
+- Make queries specific and searchable
 
-Example: ["What are the core principles of X?", "What are recent breakthroughs in X?"]"""
+Return a JSON object with a "queries" array containing {breadth} search queries.
+Example format: {{"queries": ["query 1", "query 2", "query 3"]}}"""
         
         try:
             response = ollama.chat(
                 model=self.config.get('model', 'qwen3:8b'),
                 messages=[{'role': 'user', 'content': planning_prompt}],
                 format='json',
-                options={'temperature': 0.7}  # Slightly creative
+                options={'temperature': 0.7}
             )
             
             raw_content = response['message']['content']
+            self.console.print(f"[dim]Planning response: {raw_content[:200]}...[/dim]")
+            
             parsed = json.loads(raw_content)
             
-            # Handle different JSON formats
-            if isinstance(parsed, dict) and 'queries' in parsed:
-                return parsed['queries'][:breadth]
-            elif isinstance(parsed, dict):
-                # Try to find any list value in the dict
-                for v in parsed.values():
-                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], str):
-                        return v[:breadth]
+            # Try multiple JSON formats
+            queries = []
+            if isinstance(parsed, dict):
+                # Try common keys
+                for key in ['queries', 'sub_queries', 'questions', 'search_queries', 'list']:
+                    if key in parsed and isinstance(parsed[key], list):
+                        queries = [str(q) for q in parsed[key] if q]
+                        break
+                # If no list found, try to find any list value
+                if not queries:
+                    for v in parsed.values():
+                        if isinstance(v, list) and len(v) > 0:
+                            queries = [str(q) for q in v if q]
+                            break
             elif isinstance(parsed, list):
-                return parsed[:breadth]
+                queries = [str(q) for q in parsed if q]
             
-            raise ValueError("Unexpected JSON format")
+            if queries:
+                return queries[:breadth]
+            
+            raise ValueError(f"Could not extract queries from: {raw_content[:100]}")
             
         except Exception as e:
             self.console.print(f"[yellow]Planning fallback: {e}[/yellow]")
-            # Fallback sub-queries
-            return [
-                f"{topic} - overview and key concepts",
-                f"{topic} - recent developments and research",
-                f"{topic} - practical applications",
-                f"{topic} - challenges and limitations"
-            ][:breadth]
+            # Generate practical fallback queries based on topic
+            base_queries = [
+                f"{topic} guide",
+                f"{topic} tools software",
+                f"{topic} best practices",
+                f"{topic} examples tutorials",
+                f"{topic} community resources",
+                f"how to {topic}"
+            ]
+            return base_queries[:breadth]
 
     def _execute_multi_source_search(
         self,
@@ -1196,74 +1222,101 @@ Example: ["What are the core principles of X?", "What are recent breakthroughs i
     ) -> str:
         """
         Executes search across multiple sources (web + academic).
+        Uses multiple fallback strategies to ensure results.
         """
         results = []
+        got_web_results = False
         
-        # Always search web
+        # Try search_and_fetch first with lower threshold for niche topics
         try:
             web_result = self.search_and_fetch(
                 query=query,
-                max_search_results=5,
-                max_fetch_pages=2,
-                similarity_threshold=0.5
+                max_search_results=10,
+                max_fetch_pages=3,
+                similarity_threshold=0.3  # Lower threshold for niche topics
             )
-            results.append(f"## Web Sources\n{web_result}")
+            # Check if we actually got results
+            if web_result and "No qualifying results" not in web_result and "No search results" not in web_result:
+                results.append(f"## Web Sources\n{web_result}")
+                got_web_results = True
         except Exception as e:
-            self.console.print(f"[yellow]Web search error: {e}[/yellow]")
-            results.append(f"## Web Sources\nError: {str(e)}")
+            self.console.print(f"[yellow]search_and_fetch error: {e}[/yellow]")
+        
+        # Fallback to basic web_search if search_and_fetch failed
+        if not got_web_results:
+            try:
+                self.console.print(f"[dim]Falling back to basic web search...[/dim]")
+                web_result = self.web_search(query=query, iterations=1)
+                if web_result and "No search results" not in web_result:
+                    results.append(f"## Web Sources\n{web_result}")
+                    got_web_results = True
+            except Exception as e:
+                self.console.print(f"[yellow]Web search fallback error: {e}[/yellow]")
+        
+        # Always try Wikipedia for conceptual/definitional queries
+        try:
+            # Extract key terms for Wikipedia (remove common words)
+            wiki_query = ' '.join([w for w in query.split() if len(w) > 3 and w.lower() not in 
+                ['what', 'are', 'the', 'how', 'does', 'overview', 'concepts', 'recent', 'developments']])
+            if wiki_query:
+                wiki_result = self.search_wikipedia(query=wiki_query, top_k=1, max_chars=2000)
+                if wiki_result and "No Wikipedia articles found" not in wiki_result:
+                    results.append(f"## Wikipedia\n{wiki_result}")
+        except Exception as e:
+            self.console.print(f"[dim]Wikipedia search skipped: {e}[/dim]")
         
         if not include_academic:
-            return "\n\n".join(results)
+            return "\n\n".join(results) if results else f"No results found for: {query}"
         
-        # Heuristic: Check for academic keywords
-        academic_keywords = [
+        # Only search academic sources if query seems academically relevant
+        # Check for explicit academic indicators
+        academic_indicators = [
             'research', 'study', 'paper', 'journal', 'empirical',
-            'theory', 'model', 'methodology', 'analysis', 'evidence',
-            'algorithm', 'framework', 'neural', 'machine learning', 'ai'
+            'theory', 'methodology', 'analysis', 'evidence',
+            'algorithm', 'framework', 'neural network', 'machine learning'
         ]
         
-        is_academic = any(kw in query.lower() for kw in academic_keywords)
+        query_lower = query.lower()
+        is_academic = any(ind in query_lower for ind in academic_indicators)
         
-        if is_academic:
-            # Search Semantic Scholar
+        # Avoid academic search for clearly non-academic topics
+        non_academic_indicators = ['setup', 'how to', 'best', 'tutorial', 'guide', 'tips', 'coding setup', 'development environment']
+        is_practical = any(ind in query_lower for ind in non_academic_indicators)
+        
+        if is_academic and not is_practical:
             try:
-                academic_result = self.search_academic(query, limit=5)
-                results.append(f"## Academic Sources\n{academic_result}")
+                academic_result = self.search_academic(query, limit=3)
+                if academic_result and "No academic papers found" not in academic_result:
+                    results.append(f"## Academic Sources\n{academic_result}")
             except Exception as e:
-                self.console.print(f"[yellow]Academic search skipped: {e}[/yellow]")
+                self.console.print(f"[dim]Academic search skipped: {e}[/dim]")
         
-        # For medical/biomedical queries, search PubMed
+        # For medical/biomedical queries only
         medical_keywords = [
-            'disease', 'treatment', 'drug', 'medical', 'clinical',
-            'patient', 'diagnosis', 'therapy', 'health', 'medicine',
-            'cancer', 'covid', 'vaccine', 'pharmaceutical', 'genetic'
+            'disease', 'treatment', 'drug', 'clinical', 'patient', 
+            'diagnosis', 'therapy', 'cancer', 'covid', 'vaccine'
         ]
         
-        is_medical = any(kw in query.lower() for kw in medical_keywords)
-        
-        if is_medical:
+        if any(kw in query_lower for kw in medical_keywords):
             try:
-                pubmed_result = self.search_pubmed(query, limit=5)
-                results.append(f"## Biomedical Sources\n{pubmed_result}")
+                pubmed_result = self.search_pubmed(query, limit=3)
+                if pubmed_result and "No PubMed articles found" not in pubmed_result:
+                    results.append(f"## Biomedical Sources\n{pubmed_result}")
             except Exception as e:
-                self.console.print(f"[yellow]PubMed search skipped: {e}[/yellow]")
+                self.console.print(f"[dim]PubMed search skipped: {e}[/dim]")
         
-        # Also search arXiv for technical/CS topics
-        arxiv_keywords = [
-            'neural', 'algorithm', 'deep learning', 'machine learning',
-            'transformer', 'quantum', 'optimization', 'physics', 'mathematics'
-        ]
+        # arXiv for technical CS/physics topics only
+        arxiv_keywords = ['neural', 'deep learning', 'transformer', 'quantum', 'optimization']
         
-        is_arxiv_relevant = any(kw in query.lower() for kw in arxiv_keywords)
-        
-        if is_arxiv_relevant:
+        if any(kw in query_lower for kw in arxiv_keywords):
             try:
-                arxiv_result = self.search_arxiv(query, max_results=3)
-                results.append(f"## arXiv Papers\n{arxiv_result}")
+                arxiv_result = self.search_arxiv(query, max_results=2)
+                if arxiv_result and "No arXiv papers found" not in arxiv_result:
+                    results.append(f"## arXiv Papers\n{arxiv_result}")
             except Exception as e:
-                self.console.print(f"[yellow]arXiv search skipped: {e}[/yellow]")
+                self.console.print(f"[dim]arXiv search skipped: {e}[/dim]")
         
-        return "\n\n".join(results)
+        return "\n\n".join(results) if results else f"No results found for: {query}"
 
     def _evaluate_research_quality(
         self,
@@ -1708,8 +1761,10 @@ URL: {url}
         """
         Queries SearXNG meta-search API.
         Returns list of search results with URL, title, content.
+        Returns empty list on any error (caller should fallback to DuckDuckGo).
         """
         searxng_url = self.config.get('searxng_url', 'http://localhost:8080')
+        searxng_timeout = self.config.get('searxng_timeout', 5)  # Short timeout
         
         params = {
             'q': query,
@@ -1721,10 +1776,11 @@ URL: {url}
             params['engines'] = ','.join(engines)
         
         try:
+            # Use a short connect timeout to fail fast if SearXNG is down
             response = requests.get(
                 f"{searxng_url}/search",
                 params=params,
-                timeout=10
+                timeout=(2, searxng_timeout)  # (connect_timeout, read_timeout)
             )
             
             if not response.ok:
@@ -1743,8 +1799,17 @@ URL: {url}
             
             return results
         
+        except requests.exceptions.ConnectTimeout:
+            self.console.print(f"[dim yellow]SearXNG connection timeout (is it running at {searxng_url}?)[/dim yellow]")
+            return []
+        except requests.exceptions.ConnectionError:
+            self.console.print(f"[dim yellow]SearXNG unavailable at {searxng_url}[/dim yellow]")
+            return []
+        except requests.exceptions.ReadTimeout:
+            self.console.print(f"[dim yellow]SearXNG read timeout[/dim yellow]")
+            return []
         except Exception as e:
-            self.console.print(f"[red]SearXNG search failed: {e}[/red]")
+            self.console.print(f"[dim yellow]SearXNG error: {e}[/dim yellow]")
             return []
 
     def _ddg_search(self, query: str, max_results: int) -> List[Dict]:
