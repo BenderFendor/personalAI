@@ -1,17 +1,20 @@
 """Tool implementations for web search, news, URL fetching, and more."""
 
+import json
 import math
 from datetime import datetime
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 import requests
 import trafilatura
 from trafilatura.settings import use_config
 from ddgs import DDGS
 from rich.console import Console
 from rich.markup import escape
+from rich.progress import Progress, SpinnerColumn, TextColumn
 import wikipediaapi
 import arxiv
 import fitz  # PyMuPDF
+import ollama
 
 class ToolExecutor:
     """Handles execution of all tool functions."""
@@ -44,7 +47,10 @@ class ToolExecutor:
             'get_current_time': self.get_current_time,
             'search_vector_db': self.search_vector_db,
             'search_wikipedia': self.search_wikipedia,
-            'search_arxiv': self.search_arxiv
+            'search_arxiv': self.search_arxiv,
+            'deep_research': self.deep_research,
+            'search_academic': self.search_academic,
+            'search_pubmed': self.search_pubmed
         }
     
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -229,28 +235,13 @@ class ToolExecutor:
         similarity_threshold: float = 0.55,
         diversity_lambda: float = 0.4,
         fetch_concurrency: int = 3,
-        include_chunks: bool = False
+        include_chunks: bool = False,
+        searxng_engines: Optional[List[str]] = None
     ) -> str:
         """Search then fetch, chunk, and index most relevant pages.
 
-        You are a meticulous and critical analyst. Your task is to provide exhaustive, in-depth answers.
-
-        Start by questioning the user's premise. What assumptions are being made?
-
-        Context: Provide the historical or technical context. if needed
-
-        Define: Start by defining all key terms in the prompt.
-
-        Reason through the logical implications of each alternative.
-
-        Identify any logical fallacies, biases, or unstated factors.
-
-        Use this critical examination to build your final answer from the ground up.
-
-        After this verbose analysis, you will synthesize your findings into a final, nuanced answer.
-
         Steps:
-        1. Perform web search (DuckDuckGo) for up to max_search_results.
+        1. Perform web search (SearXNG if enabled, DuckDuckGo fallback) for up to max_search_results.
         2. Rank URLs by semantic similarity + MMR diversity (if display helper available).
         3. Filter by similarity_threshold; select top-N up to max_fetch_pages.
         4. Fetch pages (bounded sequentially for now; future: async).
@@ -267,8 +258,24 @@ class ToolExecutor:
             diversity_lambda = max(0.0, min(diversity_lambda, 1.0))
             similarity_threshold = max(0.0, min(similarity_threshold, 1.0))
 
-            ddgs = DDGS()
-            raw_results = ddgs.text(query, max_results=max_search_results)
+            # Use SearXNG if enabled, fallback to DuckDuckGo
+            use_searxng = self.config.get('use_searxng', False)
+            raw_results = []
+            
+            if use_searxng:
+                try:
+                    engines = searxng_engines or self.config.get('searxng_default_engines')
+                    raw_results = self._searxng_search(query, max_search_results, engines)
+                    if raw_results:
+                        self.console.print(f"[dim]✓ Using SearXNG meta-search[/dim]")
+                except Exception as e:
+                    self.console.print(f"[yellow]SearXNG unavailable, falling back to DuckDuckGo: {e}[/yellow]")
+                    raw_results = []
+            
+            # Fallback to DuckDuckGo
+            if not raw_results:
+                raw_results = self._ddg_search(query, max_search_results)
+            
             if not raw_results:
                 return f"No search results found for '{query}'"
 
@@ -1005,3 +1012,749 @@ class ToolExecutor:
             error_msg = f"Error searching arXiv: {str(e)}"
             self.console.print(f"[red]{escape(error_msg)}[/red]")
             return error_msg
+
+    # =========================================================================
+    # DEEP RESEARCH - Multi-step recursive research agent
+    # =========================================================================
+
+    def deep_research(
+        self,
+        topic: str,
+        depth: int = 3,
+        breadth: int = 4,
+        quality_threshold: float = 0.75,
+        include_academic: bool = True
+    ) -> str:
+        """
+        Performs recursive research with planning, execution, evaluation, and synthesis.
+        
+        Args:
+            topic: Main research subject
+            depth: How many recursive iterations (1-5)
+            breadth: Number of sub-queries per iteration (2-6)
+            quality_threshold: Minimum quality score to stop early (0.0-1.0)
+            include_academic: Include academic sources (Semantic Scholar, arXiv)
+        
+        Returns:
+            Comprehensive research report with citations
+        """
+        self.console.print(f"[bold magenta]🕵️ Deep Research Initiated: {escape(topic)}[/bold magenta]")
+        
+        # Clamp parameters
+        depth = max(1, min(depth, 5))
+        breadth = max(2, min(breadth, 6))
+        quality_threshold = max(0.0, min(quality_threshold, 1.0))
+        
+        # State tracking
+        research_state = {
+            "topic": topic,
+            "current_depth": 0,
+            "max_depth": depth,
+            "findings": [],
+            "indexed_sources": set(),
+            "quality_scores": []
+        }
+        
+        # Recursive research loop
+        while research_state["current_depth"] < research_state["max_depth"]:
+            current_depth = research_state["current_depth"]
+            self.console.print(f"\n[cyan]📊 Research Depth: {current_depth + 1}/{depth}[/cyan]")
+            
+            # STEP 1: PLANNING - Generate sub-queries
+            sub_queries = self._generate_sub_queries(
+                topic=topic,
+                previous_findings=research_state["findings"],
+                breadth=breadth,
+                depth_level=current_depth
+            )
+            
+            self.console.print(f"[dim]Sub-queries: {sub_queries}[/dim]")
+            
+            # STEP 2: EXECUTION - Multi-source parallel search
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=self.console
+            ) as progress:
+                search_task = progress.add_task(
+                    f"[cyan]Investigating {len(sub_queries)} sub-topics...",
+                    total=len(sub_queries)
+                )
+                
+                for i, query in enumerate(sub_queries):
+                    # Multi-source search
+                    findings = self._execute_multi_source_search(
+                        query=query,
+                        include_academic=include_academic
+                    )
+                    research_state["findings"].append({
+                        "query": query,
+                        "content": findings,
+                        "depth": current_depth
+                    })
+                    progress.update(search_task, advance=1)
+            
+            # STEP 3: EVALUATION - Assess research quality
+            quality_score = self._evaluate_research_quality(
+                topic=topic,
+                findings=research_state["findings"]
+            )
+            research_state["quality_scores"].append(quality_score)
+            
+            self.console.print(
+                f"[yellow]Quality Score: {quality_score:.2f}/1.0[/yellow]"
+            )
+            
+            # STEP 4: ESCALATION CHECK - Stop if quality threshold met
+            if quality_score >= quality_threshold:
+                self.console.print(
+                    f"[green]✓ Quality threshold reached. Stopping early.[/green]"
+                )
+                break
+            
+            research_state["current_depth"] += 1
+        
+        # STEP 5: SYNTHESIS - Generate final report
+        report = self._synthesize_report(
+            topic=topic,
+            findings=research_state["findings"],
+            depth_reached=research_state["current_depth"]
+        )
+        
+        return report
+
+    def _generate_sub_queries(
+        self,
+        topic: str,
+        previous_findings: List[Dict],
+        breadth: int,
+        depth_level: int
+    ) -> List[str]:
+        """
+        Uses LLM to decompose topic into searchable sub-questions.
+        Adapts based on previous findings (recursive refinement).
+        """
+        # Context from previous iteration (if any)
+        context = ""
+        if previous_findings:
+            recent = previous_findings[-breadth:]
+            context = "\n".join([f"- {f['query']}: {f['content'][:200]}..." for f in recent])
+        
+        planning_prompt = f"""You are a research planning assistant. Break down the following research topic into {breadth} distinct, specific sub-questions for investigation.
+
+Research Topic: {topic}
+Current Depth: {depth_level + 1}
+
+{f"Previous Findings (use to identify gaps):\n{context}" if context else ""}
+
+Requirements:
+- Each sub-question must be searchable and specific
+- Avoid redundancy with previous queries
+- Focus on different aspects: overview, recent developments, controversies, applications, limitations
+- Return ONLY a JSON array of strings
+
+Example: ["What are the core principles of X?", "What are recent breakthroughs in X?"]"""
+        
+        try:
+            response = ollama.chat(
+                model=self.config.get('model', 'qwen3:8b'),
+                messages=[{'role': 'user', 'content': planning_prompt}],
+                format='json',
+                options={'temperature': 0.7}  # Slightly creative
+            )
+            
+            raw_content = response['message']['content']
+            parsed = json.loads(raw_content)
+            
+            # Handle different JSON formats
+            if isinstance(parsed, dict) and 'queries' in parsed:
+                return parsed['queries'][:breadth]
+            elif isinstance(parsed, dict):
+                # Try to find any list value in the dict
+                for v in parsed.values():
+                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], str):
+                        return v[:breadth]
+            elif isinstance(parsed, list):
+                return parsed[:breadth]
+            
+            raise ValueError("Unexpected JSON format")
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Planning fallback: {e}[/yellow]")
+            # Fallback sub-queries
+            return [
+                f"{topic} - overview and key concepts",
+                f"{topic} - recent developments and research",
+                f"{topic} - practical applications",
+                f"{topic} - challenges and limitations"
+            ][:breadth]
+
+    def _execute_multi_source_search(
+        self,
+        query: str,
+        include_academic: bool = True
+    ) -> str:
+        """
+        Executes search across multiple sources (web + academic).
+        """
+        results = []
+        
+        # Always search web
+        try:
+            web_result = self.search_and_fetch(
+                query=query,
+                max_search_results=5,
+                max_fetch_pages=2,
+                similarity_threshold=0.5
+            )
+            results.append(f"## Web Sources\n{web_result}")
+        except Exception as e:
+            self.console.print(f"[yellow]Web search error: {e}[/yellow]")
+            results.append(f"## Web Sources\nError: {str(e)}")
+        
+        if not include_academic:
+            return "\n\n".join(results)
+        
+        # Heuristic: Check for academic keywords
+        academic_keywords = [
+            'research', 'study', 'paper', 'journal', 'empirical',
+            'theory', 'model', 'methodology', 'analysis', 'evidence',
+            'algorithm', 'framework', 'neural', 'machine learning', 'ai'
+        ]
+        
+        is_academic = any(kw in query.lower() for kw in academic_keywords)
+        
+        if is_academic:
+            # Search Semantic Scholar
+            try:
+                academic_result = self.search_academic(query, limit=5)
+                results.append(f"## Academic Sources\n{academic_result}")
+            except Exception as e:
+                self.console.print(f"[yellow]Academic search skipped: {e}[/yellow]")
+        
+        # For medical/biomedical queries, search PubMed
+        medical_keywords = [
+            'disease', 'treatment', 'drug', 'medical', 'clinical',
+            'patient', 'diagnosis', 'therapy', 'health', 'medicine',
+            'cancer', 'covid', 'vaccine', 'pharmaceutical', 'genetic'
+        ]
+        
+        is_medical = any(kw in query.lower() for kw in medical_keywords)
+        
+        if is_medical:
+            try:
+                pubmed_result = self.search_pubmed(query, limit=5)
+                results.append(f"## Biomedical Sources\n{pubmed_result}")
+            except Exception as e:
+                self.console.print(f"[yellow]PubMed search skipped: {e}[/yellow]")
+        
+        # Also search arXiv for technical/CS topics
+        arxiv_keywords = [
+            'neural', 'algorithm', 'deep learning', 'machine learning',
+            'transformer', 'quantum', 'optimization', 'physics', 'mathematics'
+        ]
+        
+        is_arxiv_relevant = any(kw in query.lower() for kw in arxiv_keywords)
+        
+        if is_arxiv_relevant:
+            try:
+                arxiv_result = self.search_arxiv(query, max_results=3)
+                results.append(f"## arXiv Papers\n{arxiv_result}")
+            except Exception as e:
+                self.console.print(f"[yellow]arXiv search skipped: {e}[/yellow]")
+        
+        return "\n\n".join(results)
+
+    def _evaluate_research_quality(
+        self,
+        topic: str,
+        findings: List[Dict]
+    ) -> float:
+        """
+        Uses LLM to assess if current research sufficiently addresses the topic.
+        Returns quality score (0.0-1.0).
+        """
+        # Prepare findings summary
+        findings_text = "\n\n".join([
+            f"Sub-topic: {f['query']}\nFindings: {f['content'][:500]}..."
+            for f in findings[-6:]  # Last 6 findings
+        ])
+        
+        evaluation_prompt = f"""You are a research quality evaluator. Assess if the following findings adequately address the research topic.
+
+Research Topic: {topic}
+
+Findings:
+{findings_text}
+
+Evaluate on these criteria:
+1. Coverage: Are multiple aspects of the topic addressed?
+2. Depth: Is there sufficient detail in each aspect?
+3. Credibility: Are findings from reliable sources?
+4. Coherence: Do findings fit together logically?
+
+Return ONLY a JSON object with:
+{{
+  "score": <float 0.0-1.0>,
+  "reasoning": "<brief explanation>",
+  "gaps": ["<missing aspect 1>", "<missing aspect 2>"]
+}}"""
+        
+        try:
+            response = ollama.chat(
+                model=self.config.get('model', 'qwen3:8b'),
+                messages=[{'role': 'user', 'content': evaluation_prompt}],
+                format='json',
+                options={'temperature': 0.3}  # More deterministic
+            )
+            
+            result = json.loads(response['message']['content'])
+            score = float(result.get('score', 0.5))
+            
+            self.console.print(f"[dim]Evaluation: {result.get('reasoning', 'N/A')}[/dim]")
+            if result.get('gaps'):
+                self.console.print(f"[dim]Gaps identified: {', '.join(result['gaps'])}[/dim]")
+            
+            return max(0.0, min(1.0, score))  # Clamp to [0, 1]
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Evaluation error: {e}. Using default score.[/yellow]")
+            return 0.5  # Neutral score on error
+
+    def _synthesize_report(
+        self,
+        topic: str,
+        findings: List[Dict],
+        depth_reached: int
+    ) -> str:
+        """
+        Generates a comprehensive, citation-rich research report.
+        Queries RAG for indexed sources to include in synthesis.
+        """
+        # Retrieve relevant context from RAG
+        rag_summary = ""
+        if self.web_search_rag:
+            try:
+                rag_results = self.web_search_rag.retriever.retrieve(topic, top_k=10)
+                if rag_results:
+                    rag_summary = "\n".join([
+                        f"Source: {r.get('metadata', {}).get('source', 'N/A')}\n{r.get('content', '')[:300]}..."
+                        for r in rag_results
+                    ])
+            except Exception:
+                rag_summary = ""
+        
+        # Organize findings by depth
+        findings_by_depth = {}
+        for f in findings:
+            d = f.get('depth', 0)
+            if d not in findings_by_depth:
+                findings_by_depth[d] = []
+            findings_by_depth[d].append(f)
+        
+        findings_text = ""
+        for depth_level, items in sorted(findings_by_depth.items()):
+            findings_text += f"\n## Research Phase {depth_level + 1}\n"
+            for item in items:
+                findings_text += f"### {item['query']}\n{item['content'][:600]}...\n\n"
+        
+        synthesis_prompt = f"""You are an expert research synthesizer. Create a comprehensive report on the following topic using the provided research findings.
+
+Topic: {topic}
+Depth Reached: {depth_reached + 1} iterations
+
+Research Findings:
+{findings_text}
+
+Additional Context from Knowledge Base:
+{rag_summary if rag_summary else "No additional indexed sources available."}
+
+Instructions:
+1. Write a well-structured report with:
+   - Executive Summary
+   - Key Findings (organized by theme, not chronologically)
+   - Detailed Analysis
+   - Limitations & Future Research
+2. **Cite sources** inline using [Source: URL] format
+3. Synthesize conflicting information objectively
+4. Highlight areas with insufficient data
+5. Use academic tone but remain accessible
+6. Minimum 2-4 unique sources cited
+
+Format: Markdown"""
+        
+        try:
+            response = ollama.chat(
+                model=self.config.get('model', 'qwen3:8b'),
+                messages=[{'role': 'user', 'content': synthesis_prompt}],
+                options={'temperature': 0.5, 'num_ctx': 8192}  # Larger context for synthesis
+            )
+            
+            report = response['message']['content']
+        except Exception as e:
+            self.console.print(f"[red]Synthesis error: {e}[/red]")
+            report = f"# Research Report: {topic}\n\nError generating synthesis. Raw findings below:\n\n{findings_text}"
+        
+        # Add metadata footer
+        report += f"\n\n---\n**Research Metadata**\n"
+        report += f"- Topic: {topic}\n"
+        report += f"- Research Depth: {depth_reached + 1} iterations\n"
+        report += f"- Total Sub-Queries: {len(findings)}\n"
+        
+        return report
+
+    # =========================================================================
+    # ACADEMIC SEARCH TOOLS
+    # =========================================================================
+
+    def search_academic(
+        self,
+        query: str,
+        limit: int = 10,
+        year_filter: Optional[str] = None,
+        fields_of_study: Optional[List[str]] = None
+    ) -> str:
+        """
+        Searches Semantic Scholar for academic papers and auto-indexes results.
+        
+        Args:
+            query: Search query
+            limit: Number of papers to retrieve (1-100)
+            year_filter: Year range (e.g., "2020-2024" or "2023-")
+            fields_of_study: List of fields (e.g., ["Computer Science", "Medicine"])
+        
+        Returns:
+            Formatted academic results with citations
+        """
+        url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        
+        # Build query params
+        params = {
+            "query": query,
+            "limit": min(limit, 100),
+            "fields": "title,authors,year,abstract,url,citationCount,openAccessPdf,venue,publicationDate,fieldsOfStudy"
+        }
+        
+        if year_filter:
+            params["year"] = year_filter
+        
+        if fields_of_study:
+            params["fieldsOfStudy"] = ",".join(fields_of_study)
+        
+        try:
+            self.console.print(f"[dim]🎓 Querying Semantic Scholar: {escape(query)}[/dim]")
+            
+            headers = {
+                'User-Agent': 'PersonalAI-Chatbot/1.0 (Educational RAG project)'
+            }
+            # Add API key if available (optional but recommended for higher rate limits)
+            if self.config.get('semantic_scholar_api_key'):
+                headers['x-api-key'] = self.config['semantic_scholar_api_key']
+            
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            
+            if response.status_code == 429:
+                return "Rate limit exceeded for Semantic Scholar. Please try again later or use an API key."
+            
+            if not response.ok:
+                return f"Academic search failed: HTTP {response.status_code}"
+            
+            data = response.json()
+            
+            if not data.get("data"):
+                return f"No academic papers found for: {query}"
+            
+            # Format and index results
+            formatted_results = []
+            indexed_chunks = 0
+            
+            for paper in data['data'][:limit]:
+                # Extract key info
+                title = paper.get('title', 'Unknown Title')
+                year = paper.get('year', 'N/A')
+                authors_list = paper.get('authors', [])
+                authors = ", ".join([
+                    a.get('name', 'Unknown')
+                    for a in authors_list[:3]
+                ])
+                if len(authors_list) > 3:
+                    authors += " et al."
+                
+                citation_count = paper.get('citationCount', 0)
+                abstract = paper.get('abstract', 'No abstract available.') or 'No abstract available.'
+                paper_url = paper.get('url', '')
+                pdf_info = paper.get('openAccessPdf')
+                pdf_url = pdf_info.get('url', 'No PDF') if pdf_info else 'No PDF'
+                venue = paper.get('venue', 'Unknown Venue') or 'Unknown Venue'
+                
+                # Format for display
+                formatted = f"""
+**{title}** ({year})
+*Authors:* {authors}
+*Venue:* {venue} | *Citations:* {citation_count}
+*Abstract:* {abstract[:400]}{"..." if len(abstract) > 400 else ""}
+*URL:* {paper_url}
+*PDF:* {pdf_url}
+"""
+                formatted_results.append(formatted)
+                
+                # AUTO-INDEX into RAG
+                if self.web_search_rag and self.web_search_rag.auto_index:
+                    full_text = f"""
+Title: {title}
+Year: {year}
+Authors: {authors}
+Venue: {venue}
+Citations: {citation_count}
+Abstract: {abstract}
+URL: {paper_url}
+PDF: {pdf_url}
+"""
+                    try:
+                        chunks = self.web_search_rag.index_single_page(
+                            url=paper_url or f"s2paper_{paper.get('paperId', 'unknown')}",
+                            content=full_text,
+                            title=title,
+                            metadata={
+                                "type": "academic",
+                                "source": "semantic_scholar",
+                                "year": str(year),
+                                "venue": venue,
+                                "citation_count": str(citation_count)
+                            }
+                        )
+                        indexed_chunks += chunks
+                    except Exception as e:
+                        self.console.print(f"[yellow]Failed to index paper: {e}[/yellow]")
+            
+            if indexed_chunks > 0:
+                self.console.print(f"[dim]✓ Indexed {indexed_chunks} chunks from Semantic Scholar[/dim]")
+            
+            result_text = "\n---\n".join(formatted_results)
+            return f"Found {len(formatted_results)} academic papers:\n\n{result_text}"
+        
+        except Exception as e:
+            return f"Error in academic search: {str(e)}"
+
+    def search_pubmed(
+        self,
+        query: str,
+        limit: int = 10,
+        sort: str = "relevance"
+    ) -> str:
+        """
+        Searches PubMed for biomedical literature using NCBI E-utilities.
+        
+        Args:
+            query: Search query (supports PubMed query syntax)
+            limit: Number of results (1-50)
+            sort: Sort order ("relevance" or "date")
+        
+        Returns:
+            Formatted PubMed results
+        """
+        try:
+            self.console.print(f"[dim]🧬 Querying PubMed: {escape(query)}[/dim]")
+            
+            limit = max(1, min(limit, 50))
+            
+            # Use NCBI E-utilities API (no BioPython dependency)
+            base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+            
+            # Get email from config for NCBI compliance
+            email = self.config.get('pubmed_email', 'personalai@example.com')
+            
+            # Step 1: Search for IDs
+            search_url = f"{base_url}/esearch.fcgi"
+            search_params = {
+                "db": "pubmed",
+                "term": query,
+                "retmax": limit,
+                "retmode": "json",
+                "sort": "relevance" if sort == "relevance" else "pub_date",
+                "email": email
+            }
+            
+            search_response = requests.get(search_url, params=search_params, timeout=15)
+            if not search_response.ok:
+                return f"PubMed search failed: HTTP {search_response.status_code}"
+            
+            search_data = search_response.json()
+            id_list = search_data.get("esearchresult", {}).get("idlist", [])
+            
+            if not id_list:
+                return f"No PubMed articles found for: {query}"
+            
+            # Step 2: Fetch article details
+            fetch_url = f"{base_url}/efetch.fcgi"
+            fetch_params = {
+                "db": "pubmed",
+                "id": ",".join(id_list),
+                "retmode": "xml",
+                "email": email
+            }
+            
+            fetch_response = requests.get(fetch_url, params=fetch_params, timeout=15)
+            if not fetch_response.ok:
+                return f"PubMed fetch failed: HTTP {fetch_response.status_code}"
+            
+            # Parse XML response
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(fetch_response.text)
+            
+            formatted_results = []
+            indexed_chunks = 0
+            
+            for article in root.findall(".//PubmedArticle"):
+                medline = article.find(".//MedlineCitation")
+                if medline is None:
+                    continue
+                
+                # Extract article info
+                article_elem = medline.find(".//Article")
+                if article_elem is None:
+                    continue
+                
+                title_elem = article_elem.find(".//ArticleTitle")
+                title = title_elem.text if title_elem is not None else "Unknown Title"
+                
+                abstract_elem = article_elem.find(".//Abstract/AbstractText")
+                abstract = abstract_elem.text if abstract_elem is not None else "No abstract available."
+                
+                pmid_elem = medline.find(".//PMID")
+                pmid = pmid_elem.text if pmid_elem is not None else "N/A"
+                
+                journal_elem = article_elem.find(".//Journal/Title")
+                journal = journal_elem.text if journal_elem is not None else "Unknown Journal"
+                
+                # Extract year
+                year_elem = article_elem.find(".//Journal/JournalIssue/PubDate/Year")
+                year = year_elem.text if year_elem is not None else "N/A"
+                
+                # Extract authors
+                authors = []
+                for author in article_elem.findall(".//AuthorList/Author")[:3]:
+                    last_name = author.find("LastName")
+                    initials = author.find("Initials")
+                    if last_name is not None:
+                        name = last_name.text
+                        if initials is not None:
+                            name += f" {initials.text}"
+                        authors.append(name)
+                
+                author_count = len(article_elem.findall(".//AuthorList/Author"))
+                authors_str = ", ".join(authors)
+                if author_count > 3:
+                    authors_str += " et al."
+                
+                url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+                
+                formatted = f"""
+**{title}** ({year})
+*Authors:* {authors_str}
+*Journal:* {journal} | *PMID:* {pmid}
+*Abstract:* {abstract[:400] if abstract else 'No abstract'}{"..." if abstract and len(abstract) > 400 else ""}
+*URL:* {url}
+"""
+                formatted_results.append(formatted)
+                
+                # Auto-index
+                if self.web_search_rag and self.web_search_rag.auto_index:
+                    full_text = f"""
+Title: {title}
+Year: {year}
+Authors: {authors_str}
+Journal: {journal}
+PMID: {pmid}
+Abstract: {abstract}
+URL: {url}
+"""
+                    try:
+                        chunks = self.web_search_rag.index_single_page(
+                            url=url,
+                            content=full_text,
+                            title=title,
+                            metadata={
+                                "type": "pubmed",
+                                "source": "pubmed",
+                                "year": year,
+                                "journal": journal,
+                                "pmid": pmid
+                            }
+                        )
+                        indexed_chunks += chunks
+                    except Exception as e:
+                        self.console.print(f"[yellow]Failed to index PubMed article: {e}[/yellow]")
+            
+            if indexed_chunks > 0:
+                self.console.print(f"[dim]✓ Indexed {indexed_chunks} chunks from PubMed[/dim]")
+            
+            result_text = "\n---\n".join(formatted_results)
+            return f"Found {len(formatted_results)} PubMed articles:\n\n{result_text}"
+        
+        except Exception as e:
+            return f"Error in PubMed search: {str(e)}"
+
+    # =========================================================================
+    # SearXNG Integration
+    # =========================================================================
+
+    def _searxng_search(
+        self,
+        query: str,
+        max_results: int,
+        engines: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """
+        Queries SearXNG meta-search API.
+        Returns list of search results with URL, title, content.
+        """
+        searxng_url = self.config.get('searxng_url', 'http://localhost:8080')
+        
+        params = {
+            'q': query,
+            'format': 'json',
+            'pageno': 1
+        }
+        
+        if engines:
+            params['engines'] = ','.join(engines)
+        
+        try:
+            response = requests.get(
+                f"{searxng_url}/search",
+                params=params,
+                timeout=10
+            )
+            
+            if not response.ok:
+                raise Exception(f"HTTP {response.status_code}")
+            
+            data = response.json()
+            results = []
+            
+            for item in data.get('results', [])[:max_results]:
+                results.append({
+                    'href': item.get('url', ''),
+                    'title': item.get('title', ''),
+                    'body': item.get('content', ''),
+                    'engines': item.get('engines', [])
+                })
+            
+            return results
+        
+        except Exception as e:
+            self.console.print(f"[red]SearXNG search failed: {e}[/red]")
+            return []
+
+    def _ddg_search(self, query: str, max_results: int) -> List[Dict]:
+        """
+        Fallback to DuckDuckGo (existing implementation).
+        """
+        try:
+            ddgs = DDGS()
+            results = list(ddgs.text(query, max_results=max_results))
+            return results
+        except Exception as e:
+            self.console.print(f"[red]DuckDuckGo search failed: {e}[/red]")
+            return []

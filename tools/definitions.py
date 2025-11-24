@@ -332,5 +332,127 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
                     }
                 }
             }
+        },
+        {
+            'type': 'function',
+            'function': {
+                'name': 'deep_research',
+                'description': (
+                    'Conducts comprehensive multi-step research by recursively breaking down complex topics, '
+                    'searching multiple aspects across web and academic sources, and synthesizing findings into '
+                    'a detailed report with citations. Use for: broad inquiries ("state of AI in healthcare"), '
+                    'complex questions requiring multi-source integration, topics needing both breadth and depth, '
+                    'literature reviews, comparative analyses, and research summaries.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'required': ['topic'],
+                    'properties': {
+                        'topic': {
+                            'type': 'string',
+                            'description': 'The main research subject or question'
+                        },
+                        'depth': {
+                            'type': 'integer',
+                            'description': 'Number of recursive research iterations (1-5). Higher depth = more thorough but slower. Default: 3',
+                            'default': 3,
+                            'minimum': 1,
+                            'maximum': 5
+                        },
+                        'breadth': {
+                            'type': 'integer',
+                            'description': 'Number of sub-topics to investigate per iteration (2-6). Higher breadth = broader coverage. Default: 4',
+                            'default': 4,
+                            'minimum': 2,
+                            'maximum': 6
+                        },
+                        'quality_threshold': {
+                            'type': 'number',
+                            'description': 'Quality score (0.0-1.0) to stop early if reached. Default: 0.75',
+                            'default': 0.75,
+                            'minimum': 0.0,
+                            'maximum': 1.0
+                        },
+                        'include_academic': {
+                            'type': 'boolean',
+                            'description': 'Include academic sources (Semantic Scholar, arXiv). Default: true',
+                            'default': True
+                        }
+                    }
+                }
+            }
+        },
+        {
+            'type': 'function',
+            'function': {
+                'name': 'search_academic',
+                'description': (
+                    'Searches Semantic Scholar for peer-reviewed academic papers, research studies, and scholarly articles. '
+                    'Ideal for: empirical data, citations, academic credibility, research methodologies, theoretical foundations. '
+                    'Returns papers with abstracts, citation counts, and PDFs when available. '
+                    'Content is automatically indexed into RAG vector store.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'required': ['query'],
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'Academic search query (e.g., "transformer architectures attention mechanisms")'
+                        },
+                        'limit': {
+                            'type': 'integer',
+                            'description': 'Number of papers to retrieve (1-100). Default: 10',
+                            'default': 10,
+                            'minimum': 1,
+                            'maximum': 100
+                        },
+                        'year_filter': {
+                            'type': 'string',
+                            'description': 'Year range (e.g., "2020-2024" for range, "2023-" for 2023 onwards). Omit for all years.'
+                        },
+                        'fields_of_study': {
+                            'type': 'array',
+                            'items': {'type': 'string'},
+                            'description': 'Filter by fields (e.g., ["Computer Science", "Medicine"]). Omit for all fields.'
+                        }
+                    }
+                }
+            }
+        },
+        {
+            'type': 'function',
+            'function': {
+                'name': 'search_pubmed',
+                'description': (
+                    'Searches PubMed for biomedical and life sciences literature. '
+                    'Best for: medical research, clinical studies, drug information, disease mechanisms, healthcare topics. '
+                    'Returns peer-reviewed articles with abstracts and PubMed IDs. '
+                    'Content is automatically indexed into RAG vector store.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'required': ['query'],
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'PubMed search query (supports MeSH terms and Boolean operators)'
+                        },
+                        'limit': {
+                            'type': 'integer',
+                            'description': 'Number of results (1-50). Default: 10',
+                            'default': 10,
+                            'minimum': 1,
+                            'maximum': 50
+                        },
+                        'sort': {
+                            'type': 'string',
+                            'enum': ['relevance', 'date'],
+                            'description': 'Sort order. Default: relevance',
+                            'default': 'relevance'
+                        }
+                    }
+                }
+            }
         }
     ]
