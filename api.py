@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+import logging
 import json
 import shutil
 import os
@@ -10,6 +11,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from chat import ChatBot
 from models import Message
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Personal AI API")
 
@@ -57,7 +60,7 @@ async def chat_endpoint(request: ChatRequest):
             except StopIteration:
                 break
             except Exception as e:
-                print(f"Error in stream: {e}")
+                logger.exception("stream error")
                 yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
                 break
         yield "data: [DONE]\n\n"
@@ -99,6 +102,7 @@ async def rag_status():
 @app.post("/api/rag/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
+        logger.debug("upload_file start filename=%s", file.filename)
         # Save to temp file
         temp_dir = "temp_uploads"
         os.makedirs(temp_dir, exist_ok=True)
@@ -109,6 +113,7 @@ async def upload_file(file: UploadFile = File(...)):
             
         # Index
         chunks = chatbot.rag_index_file(file_path)
+        logger.debug("upload_file indexed_chunks=%s filename=%s", chunks, file.filename)
         
         # Cleanup
         os.remove(file_path)

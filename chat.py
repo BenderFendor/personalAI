@@ -1,10 +1,9 @@
 """Core chatbot implementation."""
 
 from datetime import datetime
-from typing import List, Dict, Any, Generator
+from typing import Any, Dict, Generator, List, Optional
 import json
 import ollama
-from typing import Optional, List, Dict, Any
 from rich.console import Console
 from rich.markup import escape
 
@@ -53,6 +52,8 @@ class ChatBot:
         # Token counters for calibration & index metadata
         self.total_prompt_tokens: int = 0
         self.total_eval_tokens: int = 0
+        self.last_prompt_eval_count: int = 0
+        self.last_eval_count: int = 0
         # Lazy init provider for Gemini when selected
         self._gemini_provider = None  # type: ignore
         self.url_cache: Dict[str, str] = {}
@@ -61,11 +62,6 @@ class ChatBot:
         self._warn_threshold: float = 0.85
         self._truncate_threshold: float = 0.90
         self._keep_last_turns: int = 6
-        # Token accounting (populated from Ollama response metadata when available)
-        self.total_prompt_tokens: int = 0
-        self.total_eval_tokens: int = 0
-        self.last_prompt_eval_count: int = 0
-        self.last_eval_count: int = 0
         
         # Initialize RAG if enabled
         self.rag_retriever = None
@@ -91,14 +87,14 @@ class ChatBot:
             gemini_model = getattr(self.config, "gemini_model", "")
 
             if provider == "ollama" and model.lower().startswith("gemini"):
-                self.console.print(
-                    "[yellow]\nWarning: Your provider is set to 'ollama' but the model is '"
-                    + escape(model)
-                    + "', which looks like a Google Gemini model.\n"
-                    "• To use Gemini, set llm_provider to 'gemini' and put the model under 'gemini_model'.\n"
-                    "• Or keep llm_provider 'ollama' and change 'model' to a local model (e.g., 'qwen3', 'llama3.1').\n"
-                    "Edit config.json accordingly.\n[/yellow]"
-                )
+                    self.console.print(
+                        "[yellow]\nWarning: Your provider is set to 'ollama' but the model is '"
+                        + escape(model)
+                        + "', which looks like a Google Gemini model.\n"
+                        "- To use Gemini, set llm_provider to 'gemini' and put the model under 'gemini_model'.\n"
+                        "- Or keep llm_provider 'ollama' and change 'model' to a local model (e.g., 'qwen3', 'llama3.1').\n"
+                        "Edit config.json accordingly.\n[/yellow]"
+                    )
 
             if provider == "gemini":
                 api_key = self.config.gemini_api_key

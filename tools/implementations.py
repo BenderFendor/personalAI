@@ -1,6 +1,7 @@
 """Tool implementations for web search, news, URL fetching, and more."""
 
 import json
+import logging
 import math
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable, List
@@ -15,6 +16,8 @@ import wikipediaapi
 import arxiv
 import fitz  # PyMuPDF
 import ollama
+
+logger = logging.getLogger(__name__)
 
 class ToolExecutor:
     """Handles execution of all tool functions."""
@@ -64,10 +67,12 @@ class ToolExecutor:
             Tool execution result as string
         """
         if tool_name not in self._tools:
+            logger.warning("tool.execute missing tool=%s", tool_name)
             return f"Error: Tool '{tool_name}' not found"
         
         try:
             func = self._tools[tool_name]
+            logger.debug("tool.execute start tool=%s args=%s", tool_name, arguments)
 
             # Normalize common argument aliases to make models more forgiving
             if tool_name == 'news_search':
@@ -76,8 +81,10 @@ class ToolExecutor:
                 arguments = self._normalize_web_search_args(arguments)
 
             result = func(**arguments)
+            logger.debug("tool.execute done tool=%s", tool_name)
             return result
         except Exception as e:
+            logger.exception("tool.execute error tool=%s", tool_name)
             return f"Error executing {tool_name}: {str(e)}"
 
     # -------------------------
@@ -169,10 +176,12 @@ class ToolExecutor:
             return "Web search is disabled"
         
         iterations = max(1, min(iterations, 5))  # Clamp between 1 and 5
+        logger.debug("web_search start query=%s iterations=%s", query, iterations)
         
         try:
             ddgs = DDGS()
             results = ddgs.text(query, max_results=self.config.get('max_search_results', 20))
+            logger.debug("web_search results=%s", len(results) if results else 0)
             
             if not results:
                 return f"No search results found for '{query}'"
@@ -189,7 +198,7 @@ class ToolExecutor:
                         })
                     
                     indexed_count = self.web_search_rag.index_search_results(search_data, collection_prefix="websearch")
-                    self.console.print(f"[dim]✓ Indexed {indexed_count} chunks from search results into RAG[/dim]")
+                    self.console.print(f"[dim]Indexed {indexed_count} chunks from search results into RAG[/dim]")
                 except Exception as e:
                     self.console.print(f"[dim yellow]Warning: Could not index search results: {str(e)[:50]}[/dim yellow]")
             
@@ -259,6 +268,12 @@ class ToolExecutor:
             similarity_threshold = max(0.0, min(similarity_threshold, 1.0))
 
             # Use SearXNG if enabled, fallback to DuckDuckGo
+            logger.debug(
+                "search_and_fetch start query=%s max_search_results=%s max_fetch_pages=%s",
+                query,
+                max_search_results,
+                max_fetch_pages,
+            )
             use_searxng = self.config.get('use_searxng', False)
             raw_results = []
             
@@ -267,7 +282,7 @@ class ToolExecutor:
                     engines = searxng_engines or self.config.get('searxng_default_engines')
                     raw_results = self._searxng_search(query, max_search_results, engines)
                     if raw_results:
-                        self.console.print(f"[dim]✓ Using SearXNG meta-search[/dim]")
+                        self.console.print(f"[dim]Using SearXNG meta-search[/dim]")
                 except Exception as e:
                     self.console.print(f"[yellow]SearXNG unavailable, falling back to DuckDuckGo: {e}[/yellow]")
                     raw_results = []
@@ -278,6 +293,7 @@ class ToolExecutor:
             
             if not raw_results:
                 return f"No search results found for '{query}'"
+            logger.debug("search_and_fetch raw_results=%s", len(raw_results))
 
             # Build basic list for ranking
             candidates = []
@@ -316,6 +332,7 @@ class ToolExecutor:
 
             if not ranked:
                 return f"No qualifying results (threshold {similarity_threshold}) for '{query}'"
+            logger.debug("search_and_fetch ranked_results=%s", len(ranked))
 
             show_chunks = include_chunks or self.config.get('show_chunk_previews', True)
             summary_lines = [f"Composite search_and_fetch for '{query}'", ""]
@@ -391,6 +408,12 @@ class ToolExecutor:
             return "News search is disabled"
         
         try:
+            logger.debug(
+                "news_search start keywords=%s max_results=%s auto_fetch=%s",
+                keywords,
+                max_results,
+                auto_fetch,
+            )
             max_results = max(1, min(max_results, 50))
             max_fetch_pages = max(1, min(max_fetch_pages, 10))
             similarity_threshold = max(0.0, min(similarity_threshold, 1.0))
@@ -543,7 +566,7 @@ class ToolExecutor:
                             title=c['title'],
                             metadata=news_metadata
                         )
-                        chunk_note = f"   [dim]✓ Indexed {indexed_count} chunks into RAG[/dim]"
+                        chunk_note = f"   [dim]Indexed {indexed_count} chunks into RAG[/dim]"
                     except Exception as e:
                         chunk_note = f"   [dim yellow]Warning: Indexing failed: {str(e)[:50]}[/dim yellow]"
                 else:
@@ -604,6 +627,7 @@ class ToolExecutor:
         
         try:
             max_length = max(500, min(max_length, 20000))
+            logger.debug("fetch_url_content start url=%s max_length=%s", url, max_length)
             
             config = use_config()
             config.set("DEFAULT", "EXTRACTION_TIMEOUT", "10")
@@ -659,6 +683,7 @@ class ToolExecutor:
             
             if len(content) > max_length:
                 content = content[:max_length] + f"\n\n[Content truncated at {max_length} characters. Original: {len(content)} chars]"
+            logger.debug("fetch_url_content extracted_length=%s", len(content))
             
             # Auto-index fetched content into RAG if enabled
             if self.web_search_rag and self.web_search_rag.auto_index:
@@ -678,7 +703,7 @@ class ToolExecutor:
                         content=content,
                         title=title
                     )
-                    self.console.print(f"[dim]✓ Indexed {indexed_count} chunks from fetched page into RAG[/dim]")
+                    self.console.print(f"[dim]Indexed {indexed_count} chunks from fetched page into RAG[/dim]")
                 except Exception as e:
                     self.console.print(f"[dim yellow]Warning: Could not index fetched content: {str(e)[:50]}[/dim yellow]")
             
@@ -789,6 +814,7 @@ class ToolExecutor:
             Formatted Wikipedia search results with inline URL citations
         """
         try:
+            logger.debug("search_wikipedia start query=%s top_k=%s max_chars=%s", query, top_k, max_chars)
             top_k = max(1, min(top_k, 5))
             max_chars = max(500, min(max_chars, 10000))
             
@@ -821,6 +847,7 @@ class ToolExecutor:
             
             if not results:
                 return f"No Wikipedia articles found for '{query}'. Try being more specific or using full proper nouns."
+            logger.debug("search_wikipedia results=%s", len(results))
             
             output_lines = [f"Wikipedia search results for '{escape(query)}':\n"]
             indexed_chunks = 0
@@ -851,16 +878,16 @@ class ToolExecutor:
                             }
                         )
                         indexed_chunks += chunks
-                        self.console.print(f"[dim]✓ Indexed {chunks} chunks from Wikipedia: {escape(page.title[:50])}[/dim]")
+                        self.console.print(f"[dim]Indexed {chunks} chunks from Wikipedia: {escape(page.title[:50])}[/dim]")
                     except Exception as e:
-                        self.console.print(f"[dim yellow]⚠ Could not index Wikipedia article: {escape(str(e)[:50])}[/dim yellow]")
+                        self.console.print(f"[dim yellow]Warning: Could not index Wikipedia article: {escape(str(e)[:50])}[/dim yellow]")
             
             if indexed_chunks > 0:
                 output_lines.append(f"\n[RAG INDEX] Successfully indexed {indexed_chunks} chunks into vector database")
                 output_lines.append("[TIP] Use search_vector_db to retrieve this content later\n")
             
             # Add citation format guidance
-            output_lines.append("\n📚 INLINE CITATIONS:")
+            output_lines.append("\nINLINE CITATIONS:")
             for idx, page in enumerate(results[:top_k], 1):
                 output_lines.append(f"[{idx}] {page.title} - Wikipedia ({page.fullurl})")
             
@@ -894,6 +921,7 @@ class ToolExecutor:
             Formatted arXiv search results with inline URL citations
         """
         try:
+            logger.debug("search_arxiv start query=%s max_results=%s get_full_text=%s", query, max_results, get_full_text)
             max_results = max(1, min(max_results, 10))
             
             # Map sort parameter
@@ -931,7 +959,7 @@ class ToolExecutor:
                 content = paper.summary
                 
                 if get_full_text:
-                    self.console.print(f"[dim]📄 Downloading PDF: {escape(paper.title[:50])}...[/dim]")
+                    self.console.print(f"[dim]Downloading PDF: {escape(paper.title[:50])}...[/dim]")
                     try:
                         # Download PDF to temporary location
                         pdf_path = paper.download_pdf(dirpath="/tmp")
@@ -947,11 +975,11 @@ class ToolExecutor:
                         
                         if full_text.strip():
                             content = full_text
-                            self.console.print(f"[dim]✓ Extracted {len(full_text)} characters from PDF[/dim]")
+                            self.console.print(f"[dim]Extracted {len(full_text)} characters from PDF[/dim]")
                         else:
-                            self.console.print(f"[dim yellow]⚠ PDF extraction yielded no text, using abstract[/dim yellow]")
+                            self.console.print(f"[dim yellow]Warning: PDF extraction yielded no text, using abstract[/dim yellow]")
                     except Exception as pdf_error:
-                        self.console.print(f"[dim yellow]⚠ PDF download failed: {escape(str(pdf_error)[:50])}, using abstract[/dim yellow]")
+                        self.console.print(f"[dim yellow]Warning: PDF download failed: {escape(str(pdf_error)[:50])}, using abstract[/dim yellow]")
                 
                 # Format output with inline citation
                 output_lines.append(f"{idx}. **{escape(paper.title)}**")
@@ -987,16 +1015,16 @@ class ToolExecutor:
                             }
                         )
                         indexed_chunks += chunks
-                        self.console.print(f"[dim]✓ Indexed {chunks} chunks from arXiv paper: {escape(paper.title[:50])}[/dim]")
+                        self.console.print(f"[dim]Indexed {chunks} chunks from arXiv paper: {escape(paper.title[:50])}[/dim]")
                     except Exception as e:
-                        self.console.print(f"[dim yellow]⚠ Could not index arXiv paper: {escape(str(e)[:50])}[/dim yellow]")
+                        self.console.print(f"[dim yellow]Warning: Could not index arXiv paper: {escape(str(e)[:50])}[/dim yellow]")
             
             if indexed_chunks > 0:
                 output_lines.append(f"\n[RAG INDEX] Successfully indexed {indexed_chunks} chunks into vector database")
                 output_lines.append("[TIP] Use search_vector_db to retrieve detailed paper content later\n")
             
             # Add citation format guidance
-            output_lines.append("\n📚 INLINE CITATIONS:")
+            output_lines.append("\nINLINE CITATIONS:")
             for idx, paper in enumerate(results, 1):
                 authors_short = ", ".join([author.name for author in paper.authors[:2]])
                 if len(paper.authors) > 2:
@@ -1038,7 +1066,7 @@ class ToolExecutor:
         Returns:
             Comprehensive research report with citations
         """
-        self.console.print(f"[bold magenta]🕵️ Deep Research Initiated: {escape(topic)}[/bold magenta]")
+        self.console.print(f"[bold magenta]Deep research started: {escape(topic)}[/bold magenta]")
         
         # Clamp parameters
         depth = max(1, min(depth, 5))
@@ -1058,7 +1086,7 @@ class ToolExecutor:
         # Recursive research loop
         while research_state["current_depth"] < research_state["max_depth"]:
             current_depth = research_state["current_depth"]
-            self.console.print(f"\n[cyan]📊 Research Depth: {current_depth + 1}/{depth}[/cyan]")
+            self.console.print(f"\n[cyan]Research depth: {current_depth + 1}/{depth}[/cyan]")
             
             # STEP 1: PLANNING - Generate sub-queries
             self.console.print(f"[dim]Generating search queries...[/dim]")
@@ -1083,7 +1111,7 @@ class ToolExecutor:
                 )
                 
                 for i, query in enumerate(sub_queries):
-                    self.console.print(f"\n[bold blue]🔍 [{i+1}/{len(sub_queries)}] Searching: {query}[/bold blue]")
+                    self.console.print(f"\n[bold blue][{i+1}/{len(sub_queries)}] Searching: {query}[/bold blue]")
                     
                     # Multi-source search
                     findings = self._execute_multi_source_search(
@@ -1117,15 +1145,13 @@ class ToolExecutor:
             
             # STEP 4: ESCALATION CHECK - Stop if quality threshold met
             if quality_score >= quality_threshold:
-                self.console.print(
-                    f"[green]✓ Quality threshold reached. Stopping early.[/green]"
-                )
+                self.console.print("[green]Quality threshold reached. Stopping early.[/green]")
                 break
             
             research_state["current_depth"] += 1
         
         # STEP 5: SYNTHESIS - Generate final report
-        self.console.print(f"\n[bold magenta]📝 Synthesizing research report...[/bold magenta]")
+        self.console.print(f"\n[bold magenta]Synthesizing research report...[/bold magenta]")
         report = self._synthesize_report(
             topic=topic,
             findings=research_state["findings"],
@@ -1495,7 +1521,8 @@ Format: Markdown"""
             params["fieldsOfStudy"] = ",".join(fields_of_study)
         
         try:
-            self.console.print(f"[dim]🎓 Querying Semantic Scholar: {escape(query)}[/dim]")
+            logger.debug("search_academic start query=%s limit=%s", query, limit)
+            self.console.print(f"[dim]Querying Semantic Scholar: {escape(query)}[/dim]")
             
             headers = {
                 'User-Agent': 'PersonalAI-Chatbot/1.0 (Educational RAG project)'
@@ -1581,7 +1608,7 @@ PDF: {pdf_url}
                         self.console.print(f"[yellow]Failed to index paper: {e}[/yellow]")
             
             if indexed_chunks > 0:
-                self.console.print(f"[dim]✓ Indexed {indexed_chunks} chunks from Semantic Scholar[/dim]")
+                self.console.print(f"[dim]Indexed {indexed_chunks} chunks from Semantic Scholar[/dim]")
             
             result_text = "\n---\n".join(formatted_results)
             return f"Found {len(formatted_results)} academic papers:\n\n{result_text}"
@@ -1607,7 +1634,8 @@ PDF: {pdf_url}
             Formatted PubMed results
         """
         try:
-            self.console.print(f"[dim]🧬 Querying PubMed: {escape(query)}[/dim]")
+            logger.debug("search_pubmed start query=%s limit=%s", query, limit)
+            self.console.print(f"[dim]Querying PubMed: {escape(query)}[/dim]")
             
             limit = max(1, min(limit, 50))
             
@@ -1740,7 +1768,7 @@ URL: {url}
                         self.console.print(f"[yellow]Failed to index PubMed article: {e}[/yellow]")
             
             if indexed_chunks > 0:
-                self.console.print(f"[dim]✓ Indexed {indexed_chunks} chunks from PubMed[/dim]")
+                self.console.print(f"[dim]Indexed {indexed_chunks} chunks from PubMed[/dim]")
             
             result_text = "\n---\n".join(formatted_results)
             return f"Found {len(formatted_results)} PubMed articles:\n\n{result_text}"

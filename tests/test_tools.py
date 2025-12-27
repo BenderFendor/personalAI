@@ -55,9 +55,9 @@ class TestResults:
         table.add_column("Category", style="cyan")
         table.add_column("Count", justify="right", style="green")
         
-        table.add_row("✓ Passed", str(len(self.passed)))
-        table.add_row("✗ Failed", str(len(self.failed)), style="red")
-        table.add_row("⚠ Warnings", str(len(self.warnings)), style="yellow")
+        table.add_row("PASS", str(len(self.passed)))
+        table.add_row("FAIL", str(len(self.failed)), style="red")
+        table.add_row("WARN", str(len(self.warnings)), style="yellow")
         table.add_row("Total Tests", str(len(self.passed) + len(self.failed)))
         
         console.print("\n")
@@ -66,12 +66,12 @@ class TestResults:
         if self.failed:
             console.print("\n[bold red]Failed Tests:[/bold red]")
             for tool, test, error in self.failed:
-                console.print(f"  [red]✗[/red] {tool}.{test}: {error}")
+                console.print(f"  [red]FAIL[/red] {tool}.{test}: {error}")
         
         if self.warnings:
             console.print("\n[bold yellow]Warnings:[/bold yellow]")
             for tool, test, warning in self.warnings:
-                console.print(f"  [yellow]⚠[/yellow] {tool}.{test}: {warning}")
+                console.print(f"  [yellow]WARN[/yellow] {tool}.{test}: {warning}")
 
 
 def test_web_search(executor: ToolExecutor, results: TestResults, console: Console):
@@ -110,7 +110,7 @@ def test_web_search(executor: ToolExecutor, results: TestResults, console: Conso
             # Check for errors
             if result.startswith("Error"):
                 results.add_fail("web_search", test_case['name'], result)
-                console.print(f"[red]✗ FAILED[/red]: {result[:100]}")
+                console.print(f"[red]FAIL[/red]: {result[:100]}")
                 continue
             
             # Check for expected content
@@ -120,17 +120,17 @@ def test_web_search(executor: ToolExecutor, results: TestResults, console: Conso
             if missing_terms:
                 results.add_warning("web_search", test_case['name'], 
                                   f"Expected terms not found: {missing_terms}")
-                console.print(f"[yellow]⚠ WARNING[/yellow]: Missing expected terms")
+                console.print(f"[yellow]WARN[/yellow]: Missing expected terms")
             else:
                 results.add_pass("web_search", test_case['name'])
-                console.print(f"[green]✓ PASSED[/green]")
+                console.print(f"[green]PASS[/green]")
             
             # Print result preview
             console.print(f"[dim]Preview: {result[:200]}...[/dim]")
             
         except Exception as e:
             results.add_fail("web_search", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_news_search(executor: ToolExecutor, results: TestResults, console: Console):
@@ -179,7 +179,7 @@ def test_news_search(executor: ToolExecutor, results: TestResults, console: Cons
             
             if result.startswith("Error"):
                 results.add_fail("news_search", test_case['name'], result)
-                console.print(f"[red]✗ FAILED[/red]: {result[:100]}")
+                console.print(f"[red]FAIL[/red]: {result[:100]}")
                 continue
             
             # Check for expected content
@@ -188,20 +188,20 @@ def test_news_search(executor: ToolExecutor, results: TestResults, console: Cons
             
             if "No news articles found" in result:
                 results.add_warning("news_search", test_case['name'], "No articles found")
-                console.print(f"[yellow]⚠ WARNING[/yellow]: No articles found")
+                console.print(f"[yellow]WARN[/yellow]: No articles found")
             elif missing_terms:
                 results.add_warning("news_search", test_case['name'], 
                                   f"Expected terms not found: {missing_terms}")
-                console.print(f"[yellow]⚠ WARNING[/yellow]: Missing expected terms")
+                console.print(f"[yellow]WARN[/yellow]: Missing expected terms")
             else:
                 results.add_pass("news_search", test_case['name'])
-                console.print(f"[green]✓ PASSED[/green]")
+                console.print(f"[green]PASS[/green]")
             
             console.print(f"[dim]Preview: {result[:200]}...[/dim]")
             
         except Exception as e:
             results.add_fail("news_search", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_fetch_url_content(executor: ToolExecutor, results: TestResults, console: Console):
@@ -247,32 +247,32 @@ def test_fetch_url_content(executor: ToolExecutor, results: TestResults, console
             if "error" in test_case['name'].lower():
                 if result.startswith("Error"):
                     results.add_pass("fetch_url_content", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green] (Error handled correctly)")
+                    console.print(f"[green]PASS[/green] (Error handled correctly)")
                 else:
                     results.add_fail("fetch_url_content", test_case['name'], 
                                    "Expected error but got success")
-                    console.print(f"[red]✗ FAILED[/red]: Expected error")
+                    console.print(f"[red]FAIL[/red]: Expected error")
             else:
                 # For success cases
                 if result.startswith("Error"):
                     results.add_fail("fetch_url_content", test_case['name'], result)
-                    console.print(f"[red]✗ FAILED[/red]: {result[:100]}")
+                    console.print(f"[red]FAIL[/red]: {result[:100]}")
                 else:
                     missing_terms = [term for term in test_case['expected'] 
                                    if term.lower() not in result_lower]
                     if missing_terms:
                         results.add_warning("fetch_url_content", test_case['name'], 
                                           f"Expected terms not found: {missing_terms}")
-                        console.print(f"[yellow]⚠ WARNING[/yellow]: Missing expected terms")
+                        console.print(f"[yellow]WARN[/yellow]: Missing expected terms")
                     else:
                         results.add_pass("fetch_url_content", test_case['name'])
-                        console.print(f"[green]✓ PASSED[/green]")
+                        console.print(f"[green]PASS[/green]")
             
             console.print(f"[dim]Preview: {result[:150]}...[/dim]")
             
         except Exception as e:
             results.add_fail("fetch_url_content", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_calculate(executor: ToolExecutor, results: TestResults, console: Console):
@@ -320,26 +320,26 @@ def test_calculate(executor: ToolExecutor, results: TestResults, console: Consol
             if test_case.get('is_error'):
                 if result.startswith("Error"):
                     results.add_pass("calculate", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green] (Error handled correctly)")
+                    console.print(f"[green]PASS[/green] (Error handled correctly)")
                 else:
                     results.add_fail("calculate", test_case['name'], 
                                    "Expected error but got success")
-                    console.print(f"[red]✗ FAILED[/red]: Should have errored")
+                    console.print(f"[red]FAIL[/red]: Should have errored")
             else:
                 if result.startswith("Error"):
                     results.add_fail("calculate", test_case['name'], result)
-                    console.print(f"[red]✗ FAILED[/red]: {result}")
+                    console.print(f"[red]FAIL[/red]: {result}")
                 elif test_case['expected_result'] in result:
                     results.add_pass("calculate", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green]: {result}")
+                    console.print(f"[green]PASS[/green]: {result}")
                 else:
                     results.add_warning("calculate", test_case['name'], 
                                       f"Expected {test_case['expected_result']}, got {result}")
-                    console.print(f"[yellow]⚠ WARNING[/yellow]: Result doesn't match expected")
+                    console.print(f"[yellow]WARN[/yellow]: Result doesn't match expected")
             
         except Exception as e:
             results.add_fail("calculate", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_get_current_time(executor: ToolExecutor, results: TestResults, console: Console):
@@ -355,18 +355,18 @@ def test_get_current_time(executor: ToolExecutor, results: TestResults, console:
         
         if result.startswith("Error"):
             results.add_fail("get_current_time", "time_check", result)
-            console.print(f"[red]✗ FAILED[/red]: {result}")
+            console.print(f"[red]FAIL[/red]: {result}")
         elif current_year in result and "-" in result and ":" in result:
             results.add_pass("get_current_time", "time_check")
-            console.print(f"[green]✓ PASSED[/green]: {result}")
+            console.print(f"[green]PASS[/green]: {result}")
         else:
             results.add_warning("get_current_time", "time_check", 
                               "Unexpected format")
-            console.print(f"[yellow]⚠ WARNING[/yellow]: Unexpected format: {result}")
+            console.print(f"[yellow]WARN[/yellow]: Unexpected format: {result}")
             
     except Exception as e:
         results.add_fail("get_current_time", "time_check", str(e))
-        console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+        console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_search_wikipedia(executor: ToolExecutor, results: TestResults, console: Console):
@@ -406,27 +406,27 @@ def test_search_wikipedia(executor: ToolExecutor, results: TestResults, console:
             if "No Wikipedia articles found" in result:
                 if "nonexistent" in test_case['name']:
                     results.add_pass("search_wikipedia", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green] (Correctly found no results)")
+                    console.print(f"[green]PASS[/green] (Correctly found no results)")
                 else:
                     results.add_warning("search_wikipedia", test_case['name'], 
                                       "No articles found")
-                    console.print(f"[yellow]⚠ WARNING[/yellow]: No articles found")
+                    console.print(f"[yellow]WARN[/yellow]: No articles found")
             else:
                 missing_terms = [term for term in test_case['expected'] 
                                if term.lower() not in result_lower]
                 if missing_terms and "nonexistent" not in test_case['name']:
                     results.add_warning("search_wikipedia", test_case['name'], 
                                       f"Expected terms not found: {missing_terms}")
-                    console.print(f"[yellow]⚠ WARNING[/yellow]: Missing expected terms")
+                    console.print(f"[yellow]WARN[/yellow]: Missing expected terms")
                 else:
                     results.add_pass("search_wikipedia", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green]")
+                    console.print(f"[green]PASS[/green]")
             
             console.print(f"[dim]Preview: {result[:200]}...[/dim]")
             
         except Exception as e:
             results.add_fail("search_wikipedia", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_search_arxiv(executor: ToolExecutor, results: TestResults, console: Console):
@@ -466,27 +466,27 @@ def test_search_arxiv(executor: ToolExecutor, results: TestResults, console: Con
             if "No arXiv papers found" in result:
                 if "obscure" in test_case['name']:
                     results.add_pass("search_arxiv", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green] (Correctly found no results)")
+                    console.print(f"[green]PASS[/green] (Correctly found no results)")
                 else:
                     results.add_warning("search_arxiv", test_case['name'], 
                                       "No papers found")
-                    console.print(f"[yellow]⚠ WARNING[/yellow]: No papers found")
+                    console.print(f"[yellow]WARN[/yellow]: No papers found")
             else:
                 missing_terms = [term for term in test_case['expected'] 
                                if term.lower() not in result_lower]
                 if missing_terms and "obscure" not in test_case['name']:
                     results.add_warning("search_arxiv", test_case['name'], 
                                       f"Expected terms not found: {missing_terms}")
-                    console.print(f"[yellow]⚠ WARNING[/yellow]: Missing expected terms")
+                    console.print(f"[yellow]WARN[/yellow]: Missing expected terms")
                 else:
                     results.add_pass("search_arxiv", test_case['name'])
-                    console.print(f"[green]✓ PASSED[/green]")
+                    console.print(f"[green]PASS[/green]")
             
             console.print(f"[dim]Preview: {result[:200]}...[/dim]")
             
         except Exception as e:
             results.add_fail("search_arxiv", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def test_argument_normalization(executor: ToolExecutor, results: TestResults, console: Console):
@@ -522,14 +522,14 @@ def test_argument_normalization(executor: ToolExecutor, results: TestResults, co
             
             if result.startswith("Error") and test_case.get('expected_no_error'):
                 results.add_fail("argument_normalization", test_case['name'], result)
-                console.print(f"[red]✗ FAILED[/red]: {result[:100]}")
+                console.print(f"[red]FAIL[/red]: {result[:100]}")
             else:
                 results.add_pass("argument_normalization", test_case['name'])
-                console.print(f"[green]✓ PASSED[/green]")
+                console.print(f"[green]PASS[/green]")
             
         except Exception as e:
             results.add_fail("argument_normalization", test_case['name'], str(e))
-            console.print(f"[red]✗ FAILED[/red]: {str(e)}")
+            console.print(f"[red]FAIL[/red]: {str(e)}")
 
 
 def run_all_tests():

@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, FileText, Plus, Folder } from 'lucide-react'
 import { Session } from '@/lib/api'
 import { cn } from "@/lib/utils"
-import { formatDistanceToNow } from 'date-fns'
 
 interface FolderStackProps {
   sessions: Session[]
@@ -13,6 +12,31 @@ interface FolderStackProps {
   onSelectSession: (sessionId: string) => void
   onNewChat: () => void
   activeCabinetName: string
+}
+
+const relativeTime = new Intl.RelativeTimeFormat("en", { numeric: "auto" })
+const timeUnits: Array<{ unit: Intl.RelativeTimeFormatUnit; ms: number }> = [
+  { unit: "year", ms: 31536000000 },
+  { unit: "month", ms: 2592000000 },
+  { unit: "week", ms: 604800000 },
+  { unit: "day", ms: 86400000 },
+  { unit: "hour", ms: 3600000 },
+  { unit: "minute", ms: 60000 },
+  { unit: "second", ms: 1000 },
+]
+
+function formatTimeAgo(date: Date): string {
+  const diffMs = Date.now() - date.getTime()
+  if (!Number.isFinite(diffMs)) return "Unknown"
+
+  for (const { unit, ms } of timeUnits) {
+    if (Math.abs(diffMs) >= ms || unit === "second") {
+      const value = Math.round(diffMs / ms)
+      return relativeTime.format(-value, unit)
+    }
+  }
+
+  return "Unknown"
 }
 
 export function FolderStack({ sessions, selectedSessionId, onSelectSession, onNewChat, activeCabinetName }: FolderStackProps) {
@@ -166,7 +190,7 @@ function FolderCard({ session, index, total, isSelected, onClick }: FolderCardPr
                 "text-xs font-mono uppercase tracking-wider",
                 isSelected ? "text-[#0c0c0c]/60" : "text-[#666]"
               )}>
-                {session.started_at ? formatDistanceToNow(new Date(session.started_at), { addSuffix: true }) : 'Unknown'}
+                {session.started_at ? formatTimeAgo(new Date(session.started_at)) : "Unknown"}
               </p>
             </div>
 
