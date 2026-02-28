@@ -1,20 +1,20 @@
 """RAG orchestration: indexing, retrieval, and response generation.
 
-This module wires the `OllamaEmbeddingsWrapper` and `ChromaVectorStore` to
+This module wires the `LlamaCppEmbeddingsWrapper` and `ChromaVectorStore` to
 provide a convenient `RAGRetriever` class that can index texts and run
 retrieval + generation flows.
 """
+
 from typing import List, Dict, Optional
-import math
 import logging
 
-from .embeddings import OllamaEmbeddingsWrapper
+from .embeddings import LlamaCppEmbeddingsWrapper
 from .vector_store import ChromaVectorStore
 
 try:
-    import ollama
+    from utils.llama_cpp_provider import LlamaCppProvider
 except Exception:
-    ollama = None
+    LlamaCppProvider = None
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to a knowledge base.
 
 INSTRUCTIONS:
-1. Always base your answers on the provided context from the knowledge base
-2. If the context doesn't contain enough information, say so clearly
-3. Cite the source documents when possible
-4. If you need more information, say that a web search would be helpful
+ 1. Always base your answers on the provided context from the knowledge base
+ 2. If the context doesn't contain enough information, say so clearly
+ 3. Cite the source documents when possible
+ 4. If you need more information, say that a web search would be helpful
 """
 
 
@@ -33,7 +33,7 @@ class RAGRetriever:
     """Combine embeddings and vector store to index and retrieve documents.
 
     Example:
-        emb = OllamaEmbeddingsWrapper()
+        emb = LlamaCppEmbeddingsWrapper()
         store = ChromaVectorStore()
         retriever = RAGRetriever(emb, store)
         retriever.index_texts(["doc1", "doc2"])  # simple indexing
@@ -43,13 +43,28 @@ class RAGRetriever:
 
     def __init__(
         self,
-        embeddings: OllamaEmbeddingsWrapper,
+        embeddings: LlamaCppEmbeddingsWrapper,
         vector_store: ChromaVectorStore,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        llama_cpp_base_url: str = "http://localhost:8080",
     ):
         self.emb = embeddings
         self.store = vector_store
         self.system_prompt = system_prompt
+        self.llama_cpp_base_url = llama_cpp_base_url
+        self._llm_provider: Optional[LlamaCppProvider] = None
+
+    def _get_llm_provider(self, model: str) -> LlamaCppProvider:
+        """Get or create the LLM provider."""
+        if self._llm_provider is None:
+            if LlamaCppProvider is None:
+                raise ImportError("llama.cpp provider is not available.")
+            self._llm_provider = LlamaCppProvider(
+                model=model,
+                base_url=self.llama_cpp_base_url,
+                temperature=0.0,
+            )
+        return self._llm_provider
 
     def index_texts(
         self,
@@ -77,7 +92,12 @@ class RAGRetriever:
             if metadatas:
                 batch_metas = metadatas[i : i + batch_size]
 
-            self.store.add_documents(ids=ids, embeddings=embeddings, documents=batch_texts, metadatas=batch_metas)
+            self.store.add_documents(
+                ids=ids,
+                embeddings=embeddings,
+                documents=batch_texts,
+                metadatas=batch_metas,
+            )
 
     def retrieve(self, query: str, top_k: int = 5) -> List[Dict]:
         """Retrieve the top_k most relevant documents for the query.
@@ -87,11 +107,20 @@ class RAGRetriever:
         qvec = self.emb.embed_query(query)
         results = self.store.query(query_embeddings=[qvec], n_results=top_k)
 
+        if not results:
+            return []
+
         # Chroma responds with structure: documents, distances, metadatas
         docs = []
-        documents = results.get("documents", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
+        documents = (
+            results.get("documents", [[]])[0] if results.get("documents") else []
+        )
+        distances = (
+            results.get("distances", [[]])[0] if results.get("distances") else []
+        )
+        metadatas = (
+            results.get("metadatas", [[]])[0] if results.get("metadatas") else []
+        )
 
         for doc, dist, meta in zip(documents, distances, metadatas):
             # convert cosine distance -> similarity
@@ -110,12 +139,14 @@ class RAGRetriever:
         llm_model: str = "qwen3",
         temperature: float = 0.0,
     ) -> str:
-        """Produce a response grounded on retrieved_docs using Ollama chat.
+        """Produce a response grounded on retrieved_docs using llama.cpp chat.
 
-        If `ollama` is not available the method will raise an ImportError.
+        If llama.cpp provider is not available the method will raise an ImportError.
         """
-        if ollama is None:
-            raise ImportError("The `ollama` package is required to generate RAG responses. Install and configure Ollama.")
+        if LlamaCppProvider is None:
+            raise ImportError(
+                "The llama.cpp provider is required to generate RAG responses. Ensure utils.llama_cpp_provider is available."
+            )
 
         context = ""
         for i, d in enumerate(retrieved_docs, start=1):
@@ -123,24 +154,28 @@ class RAGRetriever:
 
         prompt = f"Context from knowledge base:\n{context}\nUser Question: {user_query}\n\nPlease provide a detailed answer based on the context above. If the context doesn't contain sufficient information, say so and suggest what additional information would be helpful."
 
-        response = ollama.chat(
-            model=llm_model,
-            messages=[{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}],
-            temperature=temperature,
-        )
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt},
+        ]
 
-        # Ollama API typically returns a dict with a 'message' key containing another dict with 'content'.
-        # Sometimes, it may return a dict with a 'choices' list, where each item may have 'message' or 'text'.
-        # This logic attempts to handle both formats for compatibility.
+        provider = self._get_llm_provider(llm_model)
+        # Override temperature
+        provider.temperature = temperature
+
+        response = provider.chat(messages=messages, stream=False)
+
+        # OpenAI-compatible response format: {"choices": [{"message": {"content": "..."}}]}
         if isinstance(response, dict):
-            message = response.get("message") or response.get("choices")
-            # try common shapes
-            if isinstance(message, dict):
-                return message.get("content") or message.get("text") or ""
-            if isinstance(message, list) and message:
-                # sometimes choices list
-                first = message[0]
-                return first.get("message", {}).get("content") or first.get("text") or ""
+            choices = response.get("choices", [])
+            if choices and isinstance(choices[0], dict):
+                message = choices[0].get("message", {})
+                if isinstance(message, dict):
+                    return message.get("content", "")
 
         # fallback: convert to string
         return str(response)
+
+
+# Backwards compatibility alias
+OllamaEmbeddingsWrapper = LlamaCppEmbeddingsWrapper

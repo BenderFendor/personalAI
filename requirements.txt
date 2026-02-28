@@ -1,5 +1,5 @@
 # Core LLM and tools
-ollama>=0.4.0
+# ollama>=0.4.0  # No longer needed - using llama.cpp server via HTTP
 requests>=2.31.0
 
 # Search and web scraping
@@ -13,12 +13,6 @@ PyMuPDF>=1.24.0
 
 # Terminal UI
 rich>=13.0.0
-
-# RAG and embeddings
-sentence-transformers>=3.0.0
-chromadb>=0.5.0
-langchain>=0.3.0
-langchain-text-splitters>=0.3.0
 
 # Optional: Gemini provider support
 langchain-google-genai>=2.0.0

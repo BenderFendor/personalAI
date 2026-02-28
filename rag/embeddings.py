@@ -1,25 +1,20 @@
-"""Ollama embeddings wrapper used for indexing and query embedding.
+"""Llama.cpp embeddings wrapper used for indexing and query embedding.
 
-This module exposes a small class that calls Ollama to produce embeddings.
+This module exposes a small class that calls llama.cpp server to produce embeddings.
 It prefixes document vs query prompts as described in the RAG plan.
 
-The implementation is defensive: if `ollama` is not installed, an ImportError
-with an actionable message will be raised.
+The implementation uses the OpenAI-compatible /v1/embeddings endpoint.
 """
+
 from typing import List, Optional
-import os
-
-try:
-    import ollama
-except Exception as e:
-    ollama = None  # will raise later with helpful message
+import requests
 
 
-class OllamaEmbeddingsWrapper:
-    """Simple wrapper around the Ollama embeddings endpoint.
+class LlamaCppEmbeddingsWrapper:
+    """Simple wrapper around the llama.cpp embeddings endpoint.
 
     Usage:
-        emb = OllamaEmbeddingsWrapper(model="embeddinggemma")
+        emb = LlamaCppEmbeddingsWrapper(model="embeddinggemma", base_url="http://localhost:8080")
         vectors = emb.embed_documents(["doc1", "doc2"])
         qvec = emb.embed_query("some question")
 
@@ -27,41 +22,48 @@ class OllamaEmbeddingsWrapper:
     - Prefixes used: "Retrieval-document: " for documents and
       "Retrieval-query: " for queries (per the plan).
     - Optionally truncate returned vectors via `truncate_dim` for efficiency.
+    - Requires llama.cpp server to be started with --embedding flag
     """
 
     def __init__(
         self,
         model: str = "embeddinggemma",
-        base_url: Optional[str] = None,
+        base_url: str = "http://localhost:8080",
         batch_size: int = 8,
         truncate_dim: Optional[int] = None,
+        api_key: Optional[str] = None,
     ):
-        if ollama is None:
-            raise ImportError("The `ollama` package is required for OllamaEmbeddingsWrapper. Install it and ensure it's importable.")
-
-        # If the client supports configuring a base url via env var, set it.
-        if base_url:
-            os.environ.setdefault("OLLAMA_BASE_URL", base_url)
-
         self.model = model
+        self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
         self.truncate_dim = truncate_dim
+        self.api_key = api_key or "not-needed"
+        self._headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
 
     def _embed(self, prompt: str) -> List[float]:
-        # Ollama's python client typically exposes `embeddings` function.
-        # We call it and return the `embedding` field.
-        resp = ollama.embeddings(model=self.model, prompt=prompt)
-        
-        # Handle both dict and object responses
-        if isinstance(resp, dict):
-            emb = resp.get("embedding")
+        url = f"{self.base_url}/v1/embeddings"
+        payload = {
+            "model": self.model,
+            "input": prompt,
+        }
+
+        response = requests.post(url, json=payload, headers=self._headers, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+
+        # OpenAI-compatible response format: {"data": [{"embedding": [...]}]}
+        if isinstance(result, dict) and "data" in result:
+            emb = result["data"][0].get("embedding")
         else:
-            # Response is likely an object with attributes
-            emb = getattr(resp, "embedding", None)
-        
+            raise RuntimeError(
+                f"Unexpected response from embeddings endpoint: {result}"
+            )
+
         if emb is None:
-            # try to be resilient to different client shapes
-            raise RuntimeError(f"Unexpected response from ollama.embeddings: {resp}")
+            raise RuntimeError(f"No embedding returned from server: {result}")
 
         if self.truncate_dim:
             return emb[: self.truncate_dim]
@@ -90,7 +92,9 @@ class OllamaEmbeddingsWrapper:
         prompt = f"Retrieval-query: {text}"
         return self._embed(prompt)
 
-    def _embed_batch(self, texts: List[str], for_query: bool = False) -> List[List[float]]:
+    def _embed_batch(
+        self, texts: List[str], for_query: bool = False
+    ) -> List[List[float]]:
         out = []
         for t in texts:
             if for_query:
@@ -99,3 +103,7 @@ class OllamaEmbeddingsWrapper:
                 p = f"Retrieval-document: {t}"
             out.append(self._embed(p))
         return out
+
+
+# Backwards compatibility alias
+OllamaEmbeddingsWrapper = LlamaCppEmbeddingsWrapper
